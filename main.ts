@@ -151,6 +151,7 @@ function nextView(mode: number): corridorRender.View {
     v.mode = mode
     v.showFps = view.showFps
     v.colStep = view.colStep
+    v.quality = view.quality
     v.menu = view.menu
     v.records = view.records
     v.session = session
@@ -180,7 +181,7 @@ game.onUpdate(function () {
     fpsLog += dt
     if (fpsLog >= FPS_LOG_MS) {
         fpsLog = 0
-        console.log("fps " + view.fps + " step " + view.colStep)
+        console.log("fps " + view.fps + " q" + view.quality + " step " + view.colStep)
     }
     corridor.readPad(pad, keys, now,
         controller.up.isPressed(), controller.down.isPressed(),

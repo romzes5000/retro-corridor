@@ -136,22 +136,36 @@ test("титул и экран победы рисуют оверлей пове
     assert.equal(won.getPixel(13, 50), 4)
 })
 
-test("ниже 15 FPS три секунды подряд — рендер переходит на 80 лучей", () => {
+test("лестница качества: каждые 3 с ниже 20 FPS — ступень вниз, обратно не поднимается", () => {
     const view = new r.View()
-    view.fps = 12
+    assert.equal(view.quality, r.QUALITY_FULL)
+    view.fps = 18
     r.adapt(view, 2000)
-    view.fps = 30
+    view.fps = 25
     r.adapt(view, 100)
-    view.fps = 12
+    view.fps = 18
     r.adapt(view, 2000)
-    assert.equal(view.colStep, 1, "провал прервался — счётчик сброшен")
+    assert.equal(view.quality, r.QUALITY_FULL, "провал прервался — счётчик сброшен")
     r.adapt(view, 1100)
-    assert.equal(view.colStep, 2)
+    assert.equal(view.quality, r.QUALITY_HALF)
+    assert.equal(view.colStep, 1)
+    r.adapt(view, 2900)
+    assert.equal(view.quality, r.QUALITY_HALF, "на новой ступени снова ждём 3 с")
+    r.adapt(view, 200)
+    assert.equal(view.quality, r.QUALITY_BANDS)
+    r.adapt(view, 3100)
+    assert.equal(view.quality, r.QUALITY_LOW)
+    assert.equal(view.colStep, 2, "последняя ступень — 80 лучей")
+    r.adapt(view, 10000)
+    assert.equal(view.quality, r.QUALITY_LOW)
+    view.fps = 60
+    r.adapt(view, 10000)
+    assert.equal(view.quality, r.QUALITY_LOW, "вверх не возвращаемся")
 
     const fast = new r.View()
-    fast.fps = 40
+    fast.fps = 20
     r.adapt(fast, 10000)
-    assert.equal(fast.colStep, 1)
+    assert.equal(fast.quality, r.QUALITY_FULL, "ровно 20 FPS — не провал")
 })
 
 test("таяние экрана: одинаковое при одном seed и сходит за 0,3–1,5 с", () => {
@@ -299,4 +313,78 @@ test("пауза рисует своё меню поверх игры", () => {
     assert.notDeepEqual(paused.pixels, play.pixels)
     assert.notDeepEqual(paused.pixels, moved.pixels, "курсор паузы рисуется")
     assert.equal(paused.getPixel(13, 50), 6)
+})
+
+test("пол: пиксель под ногами берётся из нужного текселя по rowDist", () => {
+    const world = c.createWorld(["#######", "#S....#", "#######"], 0)
+    world.x = 2 * 1024 + 300
+    world.y = 1024 + 700
+    const img = frame(world, (v) => { v.mode = r.MODE_TITLE + 99 })
+    const floorRows = art.FLOOR as string[]
+    const y = 95
+    const d = Math.floor((50 * 1024) / (y - 50))
+    const fx = world.x + ((d * 1024) >> 10)
+    const fy = world.y
+    const shade = Math.min(3, d >> 11)
+    let colour = parseInt(floorRows[(fy >> 6) & 15][(fx >> 6) & 15], 16)
+    for (let k = 0; k < shade; k++) colour = (art.DARKER as number[])[colour]
+    assert.equal(img.getPixel(80, y), colour, `rowDist ${d}`)
+})
+
+test("горизонт пола сдвигается вместе с покачиванием", () => {
+    const world = c.createWorld(["#######", "#S....#", "#######"], 0)
+    const still = frame(world, (v) => { v.mode = r.MODE_TITLE + 99 })
+    world.stride = c.STRIDE >> 1
+    const bobbed = frame(world, (v) => { v.mode = r.MODE_TITLE + 99 })
+    assert.ok(r.bobPhase(world) > 0)
+    let shifted = 0
+    for (let y = 60; y < 100; y++) if (still.getPixel(80, y) !== bobbed.getPixel(80, y)) shifted++
+    assert.ok(shifted > 5, `сдвинулось строк ${shifted}`)
+})
+
+test("свет по клеткам: тёмная зона темнее, мигающая лампа меняется со временем", () => {
+    const map = ["#########", "#S......#", "#########"]
+    const bright = c.createWorld(map, 0)
+    const dark = c.createWorld(map, 0)
+    c.setLights(dark, [5, 0, 8, 2, 2])
+    assert.equal(c.lightAt(dark, 6, 1), 2)
+    assert.equal(c.lightAt(dark, 2, 1), 0)
+    const a = frame(bright, (v) => { v.mode = r.MODE_TITLE + 99 })
+    const b = frame(dark, (v) => { v.mode = r.MODE_TITLE + 99 })
+    const lum = (img: FakeImage) => {
+        let sum = 0
+        for (let y = 40; y < 60; y++) {
+            const rgb = (art.PALETTE as number[])[img.getPixel(80, y)]
+            sum += ((rgb >> 16) & 255) + ((rgb >> 8) & 255) + (rgb & 255)
+        }
+        return sum
+    }
+    assert.ok(lum(b) < lum(a), `тёмная стена ${lum(b)} против ${lum(a)}`)
+
+    const flick = c.createWorld(map, 0)
+    c.setLights(flick, [1, 1, 7, 1, c.LIGHT_FLICKER])
+    const seen = new Set<number>()
+    for (let t = 0; t < 5000; t += 128) {
+        flick.time = t
+        seen.add(c.lightAt(flick, 4, 1))
+    }
+    assert.deepEqual([...seen].sort(), [0, 3])
+})
+
+test("лава светится на полу и видна даже на ступени полос", () => {
+    const world = c.createWorld(["#######", "#S.LL.#", "#######"], 0)
+    const plain = c.createWorld(["#######", "#S....#", "#######"], 0)
+    const lavaish = (img: FakeImage) => {
+        let n = 0
+        for (let y = 55; y < 100; y++) for (let x = 40; x < 120; x++) if ([2, 4, 5].includes(img.getPixel(x, y))) n++
+        return n
+    }
+    for (const q of [r.QUALITY_FULL, r.QUALITY_HALF, r.QUALITY_BANDS]) {
+        const lit = frame(world, (v) => { v.mode = r.MODE_TITLE + 99; v.quality = q })
+        const none = frame(plain, (v) => { v.mode = r.MODE_TITLE + 99; v.quality = q })
+        assert.ok(lavaish(lit) > lavaish(none) + 50, `ступень ${q}: ${lavaish(lit)} против ${lavaish(none)}`)
+    }
+    const bands = frame(plain, (v) => { v.mode = r.MODE_TITLE + 99; v.quality = r.QUALITY_BANDS })
+    const full = frame(plain, (v) => { v.mode = r.MODE_TITLE + 99; v.quality = r.QUALITY_FULL })
+    assert.notDeepEqual(bands.pixels, full.pixels, "на полосах обычный пол не текстурируется")
 })
