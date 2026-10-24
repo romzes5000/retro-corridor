@@ -208,3 +208,63 @@ test("в шрифте есть все символы экранов меню и 
         for (const ch of text.replace(/ /g, "")) assert.ok(glyphs.includes(ch), `нет глифа «${ch}» в «${text}»`)
     }
 })
+
+function spriteBox(img: FakeImage, base: FakeImage): { colours: Set<number>; top: number } {
+    const colours = new Set<number>()
+    let top = 120
+    for (let y = 0; y < 100; y++) {
+        for (let x = 0; x < 160; x++) {
+            if (img.getPixel(x, y) === base.getPixel(x, y)) continue
+            colours.add(img.getPixel(x, y))
+            top = Math.min(top, y)
+        }
+    }
+    return { colours, top }
+}
+
+test("враги различаются: стрелок серый, рыцарь бурый, босс выше беса", () => {
+    const row = (ch: string) => c.createWorld(["#########", "#S...%..#", "#########"].map((r) => r.replace("%", ch)), 0)
+    const still = (w: World) => { for (const e of w.enemies) e.awake = true; return w }
+    const empty = frame(row("."), (v) => { v.mode = r.MODE_TITLE + 99 })
+    const look = (ch: string) => spriteBox(frame(still(row(ch)), (v) => { v.mode = r.MODE_TITLE + 99 }), empty)
+    const imp = look("E")
+    const shooter = look("F")
+    const knight = look("K")
+    const boss = look("Z")
+    assert.ok(imp.colours.has(2) || imp.colours.has(3), "бес красный")
+    assert.equal(shooter.colours.has(2) || shooter.colours.has(3), false, "стрелок не красный")
+    assert.ok(shooter.colours.has(6) || shooter.colours.has(7), `стрелок ${[...shooter.colours]}`)
+    assert.ok(knight.colours.has(10) || knight.colours.has(11), `рыцарь ${[...knight.colours]}`)
+    assert.ok(boss.top < imp.top - 5, `босс ${boss.top}, бес ${imp.top}`)
+})
+
+test("огненный шар виден в кадре на уровне груди", () => {
+    const world = c.createWorld(["#########", "#S......#", "#########"], 0)
+    const base = frame(world, (v) => { v.mode = r.MODE_TITLE + 99 })
+    world.shots.push(new c.Shot(4 * 1024, 1024 + 512, -3000, 0))
+    const img = frame(world, (v) => { v.mode = r.MODE_TITLE + 99 })
+    const box = spriteBox(img, base)
+    assert.ok(box.colours.has(1) && box.colours.has(4), `цвета ${[...box.colours]}`)
+    assert.ok(box.top > 35 && box.top < 55, `верх шара ${box.top}`)
+})
+
+test("дробовик в руках рисуется шире пистолета", () => {
+    const world = c.createWorld(["#####", "#S..#", "#####"], 0)
+    const bare = frame(world, (v) => { v.mode = r.MODE_TITLE + 99 })
+    const span = (img: FakeImage) => {
+        let lo = 160
+        let hi = -1
+        for (let y = 60; y < 100; y++) {
+            for (let x = 0; x < 160; x++) {
+                if (img.getPixel(x, y) === bare.getPixel(x, y)) continue
+                lo = Math.min(lo, x)
+                hi = Math.max(hi, x)
+            }
+        }
+        return hi - lo
+    }
+    const pistol = span(frame(world))
+    world.weapon = c.WEAPON_SHOTGUN
+    const shotgun = span(frame(world))
+    assert.ok(shotgun > pistol + 8, `пистолет ${pistol}, дробовик ${shotgun}`)
+})

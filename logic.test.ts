@@ -112,7 +112,7 @@ test("хитскан не проходит сквозь стену", () => {
     assert.equal(target(walled), -1)
     const events = run(walled, 100, (i) => { i.fire = true })
     assert.ok(events.includes("shoot"))
-    assert.equal(walled.imps[0].hp, api.IMP_HP)
+    assert.equal(walled.enemies[0].hp, api.IMP_HP)
 
     const open = createWorld(["######", "#S..E#", "######"], EAST)
     assert.equal(target(open), 0)
@@ -125,7 +125,7 @@ test("два попадания убивают беса, патроны конч
     assert.ok(events.includes("kill"))
     assert.equal(world.kills, 1)
     assert.equal(world.score, 100)
-    assert.equal(world.imps[0].dead, true)
+    assert.equal(world.enemies[0].dead, true)
 
     world.ammo = 0
     world.fireCool = 0
@@ -149,16 +149,16 @@ test("спрайт за спиной невидим, справа — праве
 
 test("бес без прямой видимости не идёт, с видимостью — идёт", () => {
     const hidden = createWorld(["#########", "#S..#..E#", "#########"], EAST)
-    const hx = hidden.imps[0].x
-    assert.equal(canSee(hidden, hidden.x, hidden.y, hx, hidden.imps[0].y), false)
+    const hx = hidden.enemies[0].x
+    assert.equal(canSee(hidden, hidden.x, hidden.y, hx, hidden.enemies[0].y), false)
     run(hidden, 1000, () => {})
-    assert.equal(hidden.imps[0].x, hx)
-    assert.equal(hidden.imps[0].awake, false)
+    assert.equal(hidden.enemies[0].x, hx)
+    assert.equal(hidden.enemies[0].awake, false)
 
     const open = createWorld(["#########", "#S.....E#", "#########"], EAST)
-    const ox = open.imps[0].x
+    const ox = open.enemies[0].x
     const events = run(open, 1000, () => {})
-    assert.ok(open.imps[0].x < ox - FP, "бес подошёл")
+    assert.ok(open.enemies[0].x < ox - FP, "бес подошёл")
     assert.ok(events.includes("alert"))
 })
 
@@ -206,7 +206,7 @@ test("компас по углу", () => {
     assert.equal(api.heading(1000), "E")
 })
 
-test("короткий B открывает карту, B со стрелкой — стрейф без карты", () => {
+test("короткий B открывает карту через 300 мс после отпускания, B со стрелкой — стрейф", () => {
     const pad = new api.Pad()
     const input = new api.Input()
     const press = (now: number, left: boolean, right: boolean, b: boolean) =>
@@ -214,24 +214,57 @@ test("короткий B открывает карту, B со стрелкой 
 
     press(0, false, false, true)
     press(100, false, false, false)
-    assert.equal(pad.tapB, true, "быстрый тап B переключает карту")
-    press(140, false, false, false)
+    assert.equal(pad.tapB, false, "сразу после отпускания ждём второго нажатия")
+    press(380, false, false, false)
+    assert.equal(pad.tapB, false)
+    press(400, false, false, false)
+    assert.equal(pad.tapB, true, "через 300 мс тап B переключает карту")
+    press(440, false, false, false)
     assert.equal(pad.tapB, false, "тап срабатывает один кадр")
 
-    press(200, false, false, true)
-    press(240, false, true, true)
+    press(600, false, false, true)
+    press(640, false, true, true)
     assert.equal(input.strafe, 1)
     assert.equal(input.turn, 0)
-    press(280, false, false, false)
+    press(680, false, false, false)
+    press(1100, false, false, false)
     assert.equal(pad.tapB, false, "после стрейфа карта не открывается")
 
-    press(400, false, false, true)
-    press(400 + api.MAP_TAP_MS + 50, false, false, false)
+    press(1200, false, false, true)
+    press(1200 + api.MAP_TAP_MS + 50, false, false, false)
+    press(2000, false, false, false)
     assert.equal(pad.tapB, false, "долгое удержание B — не тап")
 
-    press(900, true, false, false)
+    press(2100, true, false, false)
     assert.equal(input.turn, -1, "без B стрелки поворачивают")
     assert.equal(input.strafe, 0)
+})
+
+test("двойной B меняет оружие и не открывает карту, медленный двойной — два тапа карты", () => {
+    const pad = new api.Pad()
+    const input = new api.Input()
+    const seen: string[] = []
+    const press = (now: number, b: boolean) => {
+        api.readPad(pad, input, now, false, false, false, false, false, b)
+        if (pad.tapB) seen.push("map")
+        if (pad.tapB2) seen.push("swap")
+        assert.equal(input.swap, pad.tapB2)
+    }
+    press(0, true)
+    press(80, false)
+    press(200, true)
+    press(260, false)
+    for (let t = 280; t < 1000; t += 20) press(t, false)
+    assert.deepEqual(seen, ["swap"])
+
+    seen.length = 0
+    press(1000, true)
+    press(1080, false)
+    for (let t = 1100; t <= 1400; t += 20) press(t, false)
+    press(1420, true)
+    press(1480, false)
+    for (let t = 1500; t <= 1900; t += 20) press(t, false)
+    assert.deepEqual(seen, ["map", "map"])
 })
 
 test("A, зажатая со старта, не стреляет, пока её не отпустят", () => {

@@ -30,6 +30,12 @@ const SFX_DOOR = sound(WaveShape.Noise, 140, 90, 140, 260)
 const SFX_LOCKED = sound(WaveShape.Square, 220, 180, 150, 160)
 const SFX_KEY = sound(WaveShape.Square, 880, 1760, 180, 200)
 const SFX_SECRET = sound(WaveShape.Triangle, 330, 990, 200, 500)
+const SFX_BLAST = sound(WaveShape.Noise, 1400, 60, 255, 260)
+const SFX_FIREBALL = sound(WaveShape.Sawtooth, 300, 120, 160, 300)
+const SFX_SPLASH = sound(WaveShape.Noise, 500, 80, 120, 140)
+const SFX_SWAP = sound(WaveShape.Square, 500, 700, 120, 80)
+const SFX_WEAPON = sound(WaveShape.Square, 440, 1320, 200, 350)
+const SFX_UNLOCK = sound(WaveShape.Triangle, 220, 880, 220, 700)
 
 function play(effect: music.SoundEffect): void {
     music.play(effect, music.PlaybackMode.InBackground)
@@ -55,6 +61,15 @@ function playEvents(events: string[]): void {
         else if (ev == "door") play(SFX_DOOR)
         else if (ev == "locked") play(SFX_LOCKED)
         else if (ev == "key") play(SFX_KEY)
+        else if (ev == "blast") {
+            play(SFX_BLAST)
+            controller.vibrate(60)
+        }
+        else if (ev == "fireball") play(SFX_FIREBALL)
+        else if (ev == "splash") play(SFX_SPLASH)
+        else if (ev == "swap") play(SFX_SWAP)
+        else if (ev == "weapon") play(SFX_WEAPON)
+        else if (ev == "unlock") play(SFX_UNLOCK)
         else if (ev == "secret") {
             play(SFX_SECRET)
             controller.vibrate(120)
@@ -83,7 +98,7 @@ let fpsLog = 0
 
 function titleWorld(): corridor.World {
     const w = corridor.createWorld(corridor.CAMPAIGN, 0)
-    w.imps = []
+    w.enemies = []
     return w
 }
 

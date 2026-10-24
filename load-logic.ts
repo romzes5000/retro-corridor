@@ -3,7 +3,8 @@ import vm from "node:vm"
 import ts from "typescript"
 import { FakeImage, imageApi } from "./fake-image.ts"
 
-export interface Imp {
+export interface Enemy {
+    kind: number
     [k: string]: any
     x: number
     y: number
@@ -54,7 +55,7 @@ export interface World {
     turnHold: number
     won: boolean
     lost: boolean
-    imps: Imp[]
+    enemies: Enemy[]
     items: Item[]
     events: string[]
 }
@@ -174,7 +175,7 @@ export interface Game {
     corridorRender: RenderApi
 }
 
-const FILES = ["art.ts", "logic.ts", "doors.ts", "levels.ts", "game.ts", "render.ts"]
+const FILES = ["art.ts", "logic.ts", "doors.ts", "enemies.ts", "levels.ts", "game.ts", "render.ts"]
 
 // One transpile over all files, like the MakeCode compiler: namespace members declared in another
 // file only get qualified (corridor.x) when TypeScript sees the merged namespace in the same unit.

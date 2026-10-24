@@ -81,7 +81,9 @@ namespace corridorRender {
     let walls: Image[][] = []
     let lockedExit: Image[] = []
     let meltImg: Image = null
-    let impFrames: Image[][] = []
+    let enemyFrames: Image[][][] = []
+    let fireball: Image[] = []
+    let shotgun: Image = null
     let itemImages: Image[][] = []
     let faces: Image[] = []
     let gun: Image = null
@@ -143,6 +145,31 @@ namespace corridorRender {
         return out
     }
 
+    function recolor(rows: string[], from: string, to: string): string[] {
+        const out: string[] = []
+        for (const row of rows) {
+            let line = ""
+            for (let i = 0; i < row.length; i++) {
+                const k = from.indexOf(row.charAt(i))
+                line += k >= 0 ? to.charAt(k) : row.charAt(i)
+            }
+            out.push(line)
+        }
+        return out
+    }
+
+    function enemySet(from: string, to: string): Image[][] {
+        const walkA = decode(recolor(corridorArt.IMP_WALK_A, from, to))
+        const white = whiten(walkA)
+        return [
+            shades(walkA, 3),
+            shades(decode(recolor(corridorArt.IMP_WALK_B, from, to)), 3),
+            shades(decode(recolor(corridorArt.IMP_ATTACK, from, to)), 3),
+            shades(decode(recolor(corridorArt.IMP_DEAD, from, to)), 3),
+            [white, white, white],
+        ]
+    }
+
     function overlay(base: Image, top: Image): Image {
         const out = base.clone()
         out.drawTransparentImage(top, 0, 0)
@@ -187,20 +214,16 @@ namespace corridorRender {
             shades(secret, 4),
         ]
         lockedExit = shades(overlay(exitImg, decode(corridorArt.EXIT_BARS)), 4)
-        const walkA = decode(corridorArt.IMP_WALK_A)
-        impFrames = [
-            shades(walkA, 3),
-            shades(decode(corridorArt.IMP_WALK_B), 3),
-            shades(decode(corridorArt.IMP_ATTACK), 3),
-            shades(decode(corridorArt.IMP_DEAD), 3),
-        ]
-        const white = whiten(walkA)
-        impFrames.push([white, white, white])
+        enemyFrames = []
+        for (const pair of corridorArt.ENEMY_RECOLOR) enemyFrames.push(enemySet(pair[0], pair[1]))
+        fireball = shades(decode(corridorArt.FIREBALL), 2)
+        shotgun = decode(corridorArt.SHOTGUN)
         itemImages = [
             shades(decode(corridorArt.MEDKIT), 3),
             shades(decode(corridorArt.AMMO), 3),
             shades(decode(tint(corridorArt.KEY, 2)), 3),
             shades(decode(tint(corridorArt.KEY, 13)), 3),
+            shades(decode(corridorArt.SHOTGUN_ITEM), 3),
         ]
         faces = [
             decode(corridorArt.FACE_OK),
@@ -264,20 +287,41 @@ namespace corridorRender {
         }
     }
 
-    function impFrame(imp: corridor.Imp): number {
-        if (imp.dead) return IMP_DEAD
-        if (imp.hurt > 0) return IMP_HURT
-        if (imp.attack > 0) return IMP_ATTACK
-        return ((imp.walk >> 9) & 1) == 1 ? IMP_WALK_B : IMP_WALK_A
+    // Fireballs fly at chest height instead of standing on the floor like other sprites.
+    function drawFireball(target: Image, depth: number, screenX: number, size: number, ox: number, horizon: number): void {
+        const d = Math.max(2, size >> 2)
+        const img = fireball[depth > 4 * corridor.FP ? 1 : 0]
+        const x0 = screenX - (d >> 1)
+        const y0 = horizon - (d >> 1) + (size >> 4)
+        for (let c = Math.max(0, x0); c <= Math.min(W - 1, x0 + d - 1); c++) {
+            if (depth >= zbuf[c]) continue
+            const sx = Math.idiv((c - x0) * img.width, d)
+            target.blit(c + ox, y0, 1, d, img, sx, 0, 1, img.height, true, false)
+        }
+    }
+
+    function impFrame(enemy: corridor.Enemy): number {
+        if (enemy.dead) return IMP_DEAD
+        if (enemy.hurt > 0) return IMP_HURT
+        if (enemy.attack > 0) return IMP_ATTACK
+        return ((enemy.walk >> 9) & 1) == 1 ? IMP_WALK_B : IMP_WALK_A
     }
 
     function drawThings(target: Image, world: corridor.World, ox: number, horizon: number): void {
         let n = 0
-        for (let i = 0; i < world.imps.length && n < order.length; i++) {
-            const imp = world.imps[i]
-            corridor.project(world, imp.x, imp.y, proj)
+        for (let i = 0; i < world.enemies.length && n < order.length; i++) {
+            const enemy = world.enemies[i]
+            corridor.project(world, enemy.x, enemy.y, proj)
             if (!proj.visible) continue
             order[n] = i
+            depths[n] = proj.depth
+            n++
+        }
+        for (let j = 0; j < world.shots.length && n < order.length; j++) {
+            const shot = world.shots[j]
+            corridor.project(world, shot.x, shot.y, proj)
+            if (!proj.visible) continue
+            order[n] = 2000 + j
             depths[n] = proj.depth
             n++
         }
@@ -304,16 +348,21 @@ namespace corridorRender {
         }
         for (let i = 0; i < n; i++) {
             const id = order[i]
-            if (id >= 1000) {
+            if (id >= 2000) {
+                const shot = world.shots[id - 2000]
+                corridor.project(world, shot.x, shot.y, proj)
+                drawFireball(target, proj.depth, proj.screenX, proj.size, ox, horizon)
+            } else if (id >= 1000) {
                 const item = world.items[id - 1000]
                 corridor.project(world, item.x, item.y, proj)
                 const s = Math.min(2, proj.depth >> 12)
                 drawSprite(target, itemImages[item.kind][s], proj.depth, proj.screenX, proj.size, 38, ox, horizon)
             } else {
-                const imp = world.imps[id]
-                corridor.project(world, imp.x, imp.y, proj)
+                const enemy = world.enemies[id]
+                corridor.project(world, enemy.x, enemy.y, proj)
                 const s = Math.min(2, proj.depth >> 12)
-                drawSprite(target, impFrames[impFrame(imp)][s], proj.depth, proj.screenX, proj.size, 85, ox, horizon)
+                const pct = corridor.ENEMY_SIZE[enemy.kind]
+                drawSprite(target, enemyFrames[enemy.kind][impFrame(enemy)][s], proj.depth, proj.screenX, proj.size, pct, ox, horizon)
             }
         }
     }
@@ -352,10 +401,10 @@ namespace corridorRender {
             else if (item.kind == corridor.ITEM_KEY_BLUE) ic = 13
             target.fillRect(ix, iy, dot, dot, ic)
         }
-        for (const imp of world.imps) {
-            if (imp.dead || !imp.sees) continue
-            const ix = mx + ((imp.x * cell) >> 10) - (dot >> 1)
-            const iy = my + ((imp.y * cell) >> 10) - (dot >> 1)
+        for (const enemy of world.enemies) {
+            if (enemy.dead || !enemy.sees) continue
+            const ix = mx + ((enemy.x * cell) >> 10) - (dot >> 1)
+            const iy = my + ((enemy.y * cell) >> 10) - (dot >> 1)
             target.fillRect(ix, iy, dot, dot, 2)
         }
         const px = mx + ((world.x * cell) >> 10)
@@ -550,8 +599,13 @@ namespace corridorRender {
         if (!world.lost && view.mode == MODE_PLAY) {
             const gx = 56 + ((corridor.cos(phase) * 5) >> 10)
             const gy = 64 + ((Math.abs(corridor.sin(phase)) * 4) >> 10) + (view.recoil > 0 ? 5 : 0)
-            if (view.flash > 0) target.blit(gx + 12, gy - 16, 24, 20, muzzle, 0, 0, 12, 10, true, false)
-            target.blit(gx, gy, 48, 36, gun, 0, 0, 24, 18, true, false)
+            if (world.weapon == corridor.WEAPON_SHOTGUN) {
+                if (view.flash > 0) target.blit(gx + 6, gy - 20, 36, 26, muzzle, 0, 0, 12, 10, true, false)
+                target.blit(gx - 8, gy, 64, 36, shotgun, 0, 0, 32, 18, true, false)
+            } else {
+                if (view.flash > 0) target.blit(gx + 12, gy - 16, 24, 20, muzzle, 0, 0, 12, 10, true, false)
+                target.blit(gx, gy, 48, 36, gun, 0, 0, 24, 18, true, false)
+            }
         }
 
         if (view.hurt > 0 || world.lost) {
@@ -583,6 +637,14 @@ namespace corridorRender {
             if (ev == "shoot") {
                 view.flash = 70
                 view.recoil = 110
+            } else if (ev == "blast") {
+                view.flash = 90
+                view.recoil = 220
+                view.shake = Math.max(view.shake, 80)
+            } else if (ev == "weapon" || ev == "unlock") {
+                view.pickup = 300
+                view.face = FACE_GRIN
+                view.faceTime = 700
             } else if (ev == "hurt") {
                 view.hurt = 220
                 view.shake = Math.max(view.shake, 200)

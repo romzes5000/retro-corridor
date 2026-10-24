@@ -10,6 +10,7 @@
         "art.ts",
         "logic.ts",
         "doors.ts",
+        "enemies.ts",
         "levels.ts",
         "game.ts",
         "render.ts",

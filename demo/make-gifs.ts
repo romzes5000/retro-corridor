@@ -110,16 +110,16 @@ export const SCENARIOS: Scenario[] = [
             let elapsed = 0
             const drive = (dt: number): Input => {
                 elapsed += dt
-                const imp = world.imps[0]
-                if (spotted < 0 && imp.sees) spotted = elapsed
+                const enemy = world.enemies[0]
+                if (spotted < 0 && enemy.sees) spotted = elapsed
                 const bitten = world.health < 100
-                if (!fighter && spotted >= 0 && (bitten || elapsed - spotted > 6000) && !imp.dead) {
-                    fighter = new Pilot(api, [{ kind: "fire", imp: 0, ms: 4000 }, { kind: "wait", ms: 500 }])
+                if (!fighter && spotted >= 0 && (bitten || elapsed - spotted > 6000) && !enemy.dead) {
+                    fighter = new Pilot(api, [{ kind: "fire", enemy: 0, ms: 4000 }, { kind: "wait", ms: 500 }])
                 }
                 if (fighter && !fighter.done) return fighter.next(world, dt)
                 return walker.next(world, dt)
             }
-            return { world, drive, done: () => world.imps[0].dead && walker.done && (fighter?.done ?? false) }
+            return { world, drive, done: () => world.enemies[0].dead && walker.done && (fighter?.done ?? false) }
         },
     },
     {
@@ -175,7 +175,7 @@ function syncLegacy(game: Game, lw: LegacyWorld, world: World, startImps: Array<
     lw.x = world.x >> 10
     lw.y = world.y >> 10
     lw.dir = LEGACY_DIR[game.corridor.heading(world.ang)]
-    lw.imps = startImps.filter((_, i) => !world.imps[i].dead).map(([x, y]) => ({ x, y }))
+    lw.imps = startImps.filter((_, i) => !world.enemies[i].dead).map(([x, y]) => ({ x, y }))
     lw.lives = Math.max(0, Math.ceil(world.health / 34))
 }
 
@@ -191,7 +191,7 @@ export function record(scenario: Scenario, game: Game = loadGame()): Recording {
     const run = scenario.build(game)
     const view: View = new r.View()
     view.mode = r.MODE_PLAY
-    const startImps = run.world.imps.map((imp): [number, number] => [imp.x >> 10, imp.y >> 10])
+    const startImps = run.world.enemies.map((enemy): [number, number] => [enemy.x >> 10, enemy.y >> 10])
     const lw = scenario.legacy ? legacyWorld(scenario.legacy, 1) : null
     const frames: Frame[] = []
     const img = new FakeImage(160, 120)

@@ -60,7 +60,7 @@ test("бес подходит и кусает, два выстрела его у
     assert.ok(waited.includes("hurt"))
     assert.ok(world.health < 100)
 
-    const shooter = new Pilot(api, [{ kind: "fire", imp: 0, ms: 3000 }])
+    const shooter = new Pilot(api, [{ kind: "fire", enemy: 0, ms: 3000 }])
     const fought = play(world, (dt) => shooter.next(world, dt), 3000)
     assert.ok(fought.includes("kill"))
     assert.equal(world.kills, 1)
@@ -110,6 +110,6 @@ test("пилот проходит кампанию из трёх уровней 
         more = api.completeLevel(session, world)
     }
     assert.equal(session.level, 3)
-    assert.ok(seen.has("key") && seen.has("door"), `события ${[...seen]}`)
+    for (const ev of ["key", "door", "weapon", "blast", "fireball", "unlock"]) assert.ok(seen.has(ev), `нет «${ev}» среди ${[...seen]}`)
     assert.ok(session.kills >= 3)
 })
