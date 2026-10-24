@@ -1,6 +1,7 @@
 // Top-down map for the live page: the level once per attempt, then a few times a second the player,
 // the route the bridge follows and what the player knows. Enemies show only when in sight now or
-// seen in the last MEMORY_MS, the same rule the bridge plays by; the map itself is known.
+// seen in the last MEMORY_MS, the same rule the bridge plays by; cells the player has not seen yet
+// (the bridge's known map) stay dark, with their doors and items.
 import type { LogicApi, World } from "../load-logic.ts"
 import type { LivePlayer } from "./live.ts"
 import { inSight, MEMORY_MS, type Memory } from "./memory.ts"
@@ -24,6 +25,8 @@ export interface Route {
     path: Cell[]
     // Out of sight now, seen in the last MEMORY_MS: where (cells) and when (console ms).
     remembered: Array<{ i: number; kind: string; x: number; y: number; at: number }>
+    // One char per cell, row after row: 1 seen by the player, 0 not yet.
+    seen: string
 }
 
 export interface LevelMap {
@@ -59,6 +62,8 @@ export interface MapOverlay {
     goal: { kind: GoalKind; cell: Cell | null; what: string } | null
     // Route cells from the player's cell on.
     path: Cell[]
+    // Route.seen of this map; empty until the bridge has planned on it.
+    seen: string
 }
 
 const round2 = (v: number) => Math.round(v * 100) / 100
@@ -79,7 +84,7 @@ const BOSS_SOURCES: Record<string, string> = { seen: "boss, last seen", spawn: "
 function goalWhat(api: LogicApi, world: World, sit: Situation): string {
     const goal: string = sit.goal
     if (goal === "exit") return "exit"
-    if (goal === "explore") return "unexplored area"
+    if (goal === "explore") return sit.recheckMs > 0 ? "area to look again" : "unexplored area"
     if (goal === "boss") return sit.bossSeen ? "boss" : BOSS_SOURCES[sit.bossSource] ?? "boss"
     if (goal === "key") {
         const item = world.items.find((it) => !it.taken && sit.goalCell && same(cellOf(it.x, it.y), sit.goalCell))
@@ -99,6 +104,7 @@ export function routeOf(api: LogicApi, world: World, sit: Situation, memory: Mem
             const s = memory.last.get(r.i)
             return s ? [{ i: r.i, kind: r.kind, x: round2(s.x / api.FP), y: round2(s.y / api.FP), at: s.at }] : []
         }),
+        seen: memory.known.toJSON().seen,
     }
 }
 
@@ -158,6 +164,7 @@ export function mapOverlay(api: LogicApi, world: World, seg: number, snap: Snaps
         shots: Array.from(world.shots as any[]).filter((s) => inSight(api, world, s.x, s.y)).map((s) => ({ x: round2(s.x / api.FP), y: round2(s.y / api.FP) })),
         goal: r ? { kind: r.goal, cell: r.goalCell, what: r.what } : null,
         path: from > 0 ? path.slice(from) : path,
+        seen: r?.seen ?? "",
     }
 }
 
@@ -223,6 +230,7 @@ export const MAP_PANEL = `<div id="map-panel">
     <span><i style="background:#eee"></i>medkit</span>
     <span><i style="background:#e8c840"></i>ammo</span>
     <span><i style="background:#c87830"></i>shotgun</span>
+    <span><i style="background:#000;border:1px solid #444;width:7px;height:7px"></i>not seen yet</span>
   </div>
   </div>
 </div>`
@@ -347,16 +355,22 @@ export const MAP_SCRIPT = `
     }
     function draw(o) {
       ctx.drawImage(base, 0, 0)
+      const fog = o.seen.length === map.w * map.h
+      const known = (x, y) => !fog || o.seen[y * map.w + x] === "1"
+      if (fog) {
+        ctx.fillStyle = "#000"
+        for (let y = 0; y < map.h; y++) for (let x = 0; x < map.w; x++) if (!known(x, y)) ctx.fillRect(c(x), c(y), cell, cell)
+      }
       if (o.exitLocked) {
         ctx.strokeStyle = "#f33"
         ctx.lineWidth = 2
-        for (const [x, y] of exits) {
+        for (const [x, y] of exits.filter(([x, y]) => known(x, y))) {
           ctx.strokeRect(c(x) + 2, c(y) + 2, cell - 4, cell - 4)
           ctx.beginPath(); ctx.moveTo(c(x) + 3, c(y) + 3); ctx.lineTo(c(x + 1) - 3, c(y + 1) - 3); ctx.stroke()
         }
       }
-      map.doors.forEach((d, i) => door(d, o.doors[i] || "closed"))
-      map.items.forEach((it, i) => { if (!o.taken[i]) item(it) })
+      map.doors.forEach((d, i) => { if (known(d.x, d.y)) door(d, o.doors[i] || "closed") })
+      map.items.forEach((it, i) => { if (!o.taken[i] && known(it.x, it.y)) item(it) })
       if (o.path.length > 1) {
         ctx.strokeStyle = "rgba(0, 221, 255, 0.85)"
         ctx.lineWidth = Math.max(2, cell / 7)

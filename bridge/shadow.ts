@@ -2,7 +2,6 @@
 // rebuilds it from the same level code and checks the console's hash before trusting it.
 import type { LogicApi, World } from "../load-logic.ts"
 import type { Snapshot } from "./protocol.ts"
-import type { Cell } from "./route.ts"
 
 export interface Session {
     [k: string]: unknown
@@ -43,8 +42,6 @@ function buildLevel(api: LogicApi, snap: Snapshot): { world: World | null; probl
 export class Shadow {
     readonly api: LogicApi
     world: World | null = null
-    // Enemy spawn cells of the current level, by enemy index.
-    spawns: Cell[] = []
     // Why the last sync failed, empty when the world is trusted.
     problem = ""
     private key = ""
@@ -61,7 +58,6 @@ export class Shadow {
             const built = buildLevel(this.api, snap)
             this.world = built.world
             this.problem = built.problem
-            this.spawns = built.world ? built.world.enemies.map((e): Cell => [e.x >> 10, e.y >> 10]) : []
         }
         const world = this.world
         if (!world) return null
@@ -86,8 +82,19 @@ export class Shadow {
             enemy.sees = e.sees
         }
         world.shots = snap.shots.map((s) => new this.api.Shot(s.x, s.y, s.vx, s.vy))
+        // Only the state travels; sight and bodies go by `progress`, so an open door is set fully
+        // open (seen through, as on screen) and a moving one half way (still blocks).
+        const api = this.api
         snap.doors.forEach((state, i) => {
-            if (world.doors[i]) world.doors[i].state = state
+            const door = world.doors[i]
+            if (!door) return
+            door.state = state
+            if (state === api.DOOR_OPEN) {
+                door.progress = api.FP
+                door.hold = api.DOOR_HOLD_MS
+            } else {
+                door.progress = state === api.DOOR_CLOSED ? 0 : api.FP >> 1
+            }
         })
         world.items.forEach((item, i) => {
             item.taken = snap.taken[i] ?? false

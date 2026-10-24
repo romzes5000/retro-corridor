@@ -340,6 +340,7 @@ test("мост: общий урок из файла срабатывает на 
     const run = async (lessons: boolean) => {
         const { world, link } = hangar(21)
         world.health = 50
+        world.x = 5 * api.FP + api.FP / 2
         const transport = new FakeTransport()
         const seen: Array<{ state: Record<string, unknown>; hint?: JevHint }> = []
         const jev: JevFn = async (state, hint) => {
@@ -399,7 +400,7 @@ test("--sim D1-D5: глубины бесконечного режима, кам�
     assert.throws(() => simLevels(api, "NOWHERE"), /no level/)
 })
 
-test("мост на глубине D2: общий урок с уровня кампании в силе и подменяет advance", async () => {
+test("мост на глубине D2: общий урок с уровня кампании в силе и подменяет advance, как только аптечка на виду", async () => {
     const [d2] = simLevels(api, "D2")
     const sim = new SimConsole(d2.index, api.DIFF_EASY, 5, false, d2.endless)
     sim.world.health = 50
@@ -408,14 +409,19 @@ test("мост на глубине D2: общий урок с уровня ка�
     const log: LogRecord[] = []
     const jev: JevFn = async () => ({ action: "advance", confidence: 0.5, danger: null, cost: 0, latencyMs: 0, error: "" })
     const bridge = new Bridge(sim.api, sim, jev, (r) => log.push(r), () => sim.clock, 100, { lessons: { store, reflect: null } })
-    while (!log.some((r) => r.kind === "decision") && sim.clock < 5000) {
+    const medkitSeen = (r: LogRecord) => r.kind === "decision" && r.state?.medkit != null
+    while (!log.some(medkitSeen) && sim.clock < 60000) {
+        sim.world.health = 50
         sim.step()
         await new Promise((resolve) => setImmediate(resolve))
     }
-    const rec = log.find((r) => r.kind === "decision")
+    const at = log.findIndex(medkitSeen)
+    assert.ok(at >= 0, "аптечка попалась на глаза за минуту")
+    const rec = log[at]
     assert.deepEqual([sim.session.kind, sim.session.level], [api.RUN_ENDLESS, 1])
     assert.deepEqual([rec?.decision?.action, rec?.decision?.label, rec?.override, rec?.lesson], ["heal", "HEAL!", true, "L1"])
-    assert.equal(bridge.stats.lessonActive, 1)
+    assert.ok(bridge.stats.lessonActive >= 1)
+    assert.ok(log.slice(0, at).every((r) => r.kind !== "decision" || r.decision?.action !== "heal"), "к невиданной аптечке урок не ведёт")
 })
 
 test("сценарий: смерть на ARENA даёт урок у начала серии, на следующих попытках он в силе и подменяет advance", async () => {

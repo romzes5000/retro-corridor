@@ -2,7 +2,7 @@
 import type { LogicApi, World } from "../load-logic.ts"
 import type { Action } from "./jev.ts"
 import { CMD } from "./mailbox.ts"
-import { ROUTE_CELLS, waypoints, type Situation } from "./observe.ts"
+import { ROUTE_CELLS, walkPoints, type Situation } from "./observe.ts"
 import type { Cell } from "./route.ts"
 
 export interface Decision {
@@ -70,15 +70,15 @@ function attackTarget(sit: Situation): number {
     return (seen ?? sit.enemies[0])?.i ?? -1
 }
 
-function walk(action: Action, path: Cell[], danger: number): Decision | null {
-    const points = waypoints(path, danger >= DANGER_SHORT ? SHORT_CELLS : ROUTE_CELLS)
+function walk(action: Action, path: Cell[], danger: number, beyond: Cell[] = []): Decision | null {
+    const points = walkPoints(path, beyond, danger >= DANGER_SHORT ? SHORT_CELLS : ROUTE_CELLS)
     if (points.length === 0) return null
     return make(action, CMD.goto, points[0][0], points[0][1], points.slice(1))
 }
 
 function advance(api: LogicApi, world: World, sit: Situation, danger: number): Decision {
     if (sit.next) {
-        const go = walk("advance", sit.path, danger)
+        const go = walk("advance", sit.path, danger, sit.beyond)
         if (go) return go
     }
     if (sit.goal === "boss" && sit.bossSeen) {

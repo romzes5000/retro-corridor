@@ -59,11 +59,20 @@ test("факты: health_state на границах, урон оружия, и�
     assert.match(String(facts(api, world, situate(api, world), []).weapon), /3 pellets/)
 })
 
+// Memory that has turned around once on the player's cell.
+function lookedAround(world: World): Memory {
+    const memory = new Memory()
+    memory.lookAround("t", api, world, 0)
+    return memory
+}
+
 test("факты: аптечка с крюком от маршрута и null при 100 HP; дробовик null после подбора и в руках", () => {
     const world = api.createWorld(["#########", "#S.....X#", "#.#######", "#H#######", "#########"], 0)
-    assert.equal(facts(api, world, situate(api, world), []).medkit, null, "при 100 HP аптечку не взять")
+    const seen = lookedAround(world)
+    assert.equal(facts(api, world, situate(api, world, seen), []).medkit, null, "при 100 HP аптечку не взять")
     world.health = 30
-    const medkit = facts(api, world, situate(api, world), []).medkit as Record<string, unknown>
+    assert.equal(facts(api, world, situate(api, world), []).medkit, null, "аптечку за углом не видели — её нет в фактах")
+    const medkit = facts(api, world, situate(api, world, seen), []).medkit as Record<string, unknown>
     assert.deepEqual(medkit, { steps: 2, direction: "right", detour_steps: 4, heals: api.HEALTH_PICKUP })
     const onTheWay = api.createWorld(["#########", "#S..H..X#", "#########"], 0)
     onTheWay.health = 30
@@ -109,18 +118,20 @@ test("мало здоровья: мирный выбор Jev заменяетс�
     const map = ["#########", "#S.....X#", "#.#######", "#H#######", "#########"]
     const world = api.createWorld(map, 0)
     world.health = 30
-    const sit = situate(api, world)
+    assert.equal(mustHeal(world, situate(api, world), "advance"), false, "аптечку за углом ещё не видели")
+    const seen = lookedAround(world)
+    const sit = situate(api, world, seen)
     for (const pick of ["advance", "wait", "open", "ammo", "weapon", "retreat"] as Action[]) assert.equal(mustHeal(world, sit, pick), true, pick)
     for (const pick of ["attack", "dodge_left", "dodge_right", "heal"] as Action[]) assert.equal(mustHeal(world, sit, pick), false, pick)
     const d = decide(api, world, sit, "heal")
     assert.deepEqual([d.action, d.cmd, d.a, d.b], ["heal", CMD.goto, 1, 3])
 
     world.health = MUST_HEAL_HP
-    assert.equal(mustHeal(world, situate(api, world), "advance"), false, "40 HP — решает Jev")
+    assert.equal(mustHeal(world, situate(api, world, seen), "advance"), false, "40 HP — решает Jev")
     world.health = 30
     world.enemies.push(new api.Enemy(api.ENEMY_IMP, world.x + 900, world.y))
-    assert.equal(mustHeal(world, situate(api, world), "retreat"), false, "есть от кого отступать")
-    assert.equal(mustHeal(world, situate(api, world), "advance"), true)
+    assert.equal(mustHeal(world, situate(api, world, seen), "retreat"), false, "есть от кого отступать")
+    assert.equal(mustHeal(world, situate(api, world, seen), "advance"), true)
     const dry = api.createWorld(["#########", "#S.....X#", "#########"], 0)
     dry.health = 10
     assert.equal(mustHeal(dry, situate(api, dry), "advance"), false, "аптечки нет")
@@ -134,7 +145,9 @@ test("мало здоровья: мирный выбор Jev заменяетс�
 test("мост: при 30 HP ответ advance уходит на приставку как HEAL и считается в forcedHeal", async () => {
     const { world, link } = hangar(12)
     world.health = 30
-    assert.ok(situate(api, world).medkit, "на уровне есть аптечка")
+    assert.equal(situate(api, world).medkit, null, "со старта аптечки не видно")
+    world.x = centre(5)
+    assert.ok(situate(api, world).medkit, "из (5,1) видна аптечка (9,1)")
     const transport = new FakeTransport()
     const log: LogRecord[] = []
     const bridge = new Bridge(api, transport, always("advance"), (r) => log.push(r), () => link.clock, 1)
@@ -227,7 +240,7 @@ test("память: ушедший за угол враг в last_seen 5 с, п�
     assert.equal(memory.last.size, 0, "убитый")
 })
 
-test("босс за красной и синей дверями: сначала красный ключ, с ним синий, с обоими — к боссу", () => {
+test("босс за красной и синей дверями: видимый красный ключ, за его дверью синий, с обоими — разведка за синей дверью до босса", () => {
     const map = [
         "###########",
         "#S..r#....#",
@@ -237,19 +250,30 @@ test("босс за красной и синей дверями: сначала 
         "###########",
     ]
     const world = api.createWorld(map, 0)
-    const spawn: [number, number] = [world.enemies[0].x >> 10, world.enemies[0].y >> 10]
     const memory = new Memory()
-    memory.observe("1:3:0", api, world, 0, [spawn])
+    memory.observe("1:3:0", api, world, 0)
     let sit = situate(api, world, memory)
-    assert.deepEqual([sit.goal, sit.goalCell], ["key", [4, 1]], "без ключей к боссу пути нет — идём за красным")
+    assert.deepEqual([sit.goal, sit.goalCell], ["key", [4, 1]], "босса не видно, красный ключ на виду — берём его")
     assert.ok(sit.path.length > 1 && sit.next, "есть куда идти, не WAIT")
     assert.notEqual(decide(api, world, sit, "advance").cmd, CMD.wait)
     world.keys = api.KEY_RED
     sit = situate(api, world, memory)
-    assert.deepEqual([sit.goal, sit.goalCell], ["key", [8, 2]])
+    assert.equal(sit.goal, "explore", "синего ключа за красной дверью ещё не видели")
+    assert.doesNotMatch(JSON.stringify(facts(api, world, sit, [])), /blue key/)
+    world.x = centre(6)
+    world.y = centre(2)
+    memory.observe("1:3:0", api, world, 1000)
+    sit = situate(api, world, memory)
+    assert.deepEqual([sit.goal, sit.goalCell], ["key", [8, 2]], "за красной дверью увидел синий ключ")
     world.keys = api.KEY_RED | api.KEY_BLUE
     sit = situate(api, world, memory)
-    assert.deepEqual([sit.goal, sit.goalCell, sit.bossSource], ["boss", spawn, "spawn"])
+    assert.deepEqual([sit.goal, sit.bossSeen], ["explore", false], "босс за синей дверью не виден — разведка")
+    assert.notEqual(decide(api, world, sit, "advance").cmd, CMD.wait, "есть куда идти")
+    world.y = centre(4)
+    world.ang = 512
+    memory.observe("1:3:0", api, world, 2000)
+    sit = situate(api, world, memory)
+    assert.deepEqual([sit.goal, sit.goalCell, sit.bossSeen], ["boss", [5, 4], true])
 })
 
 test("сценарий: на глубине D10 босс за цветными дверями — мост ведёт за ключами, а не стоит", async () => {
@@ -262,37 +286,45 @@ test("сценарий: на глубине D10 босс за цветными �
     assert.notEqual(sim.world.keys, 0, "ключ взят за 30 с")
 })
 
-test("босс за стеной: идём к месту последней встречи, без неё — к точке появления; невидимого не атакуем", () => {
+test("босс за стеной: где появится, не знаем — разведка; к месту последней встречи; на новой попытке — где видели раньше; невидимого не атакуем", () => {
     const map = ["#########", "#S......#", "#.#####.#", "#...Z...#", "#########"]
     const world = api.createWorld(map, 0)
     world.exitLocked = true
-    const spawn: [number, number] = [world.enemies[0].x >> 10, world.enemies[0].y >> 10]
     const memory = new Memory()
-    memory.observe("1:2:0", api, world, 0, [spawn])
+    memory.observe("1:2:0", api, world, 0, "map")
     let sit = situate(api, world, memory)
-    assert.deepEqual([sit.goal, sit.bossSeen, sit.bossSource, sit.goalCell], ["boss", false, "spawn", spawn])
-    assert.match(String(facts(api, world, sit, []).goal), /find the boss to unlock the exit, it appears \d+ steps away/)
+    assert.deepEqual([sit.goal, sit.bossSeen, sit.bossSource], ["explore", false, ""], "точка появления босса не подсказывается")
+    assert.match(String(facts(api, world, sit, []).goal), /exploring: boss not found yet, unexplored area \d+ steps away/)
     assert.notEqual(decide(api, world, sit, "advance").cmd, CMD.attack)
     assert.notEqual(decide(api, world, sit, "attack").cmd, CMD.attack, "attack по невидимому — продвижение")
 
     const boss = world.enemies[0]
     boss.x = centre(7)
     boss.y = centre(1)
-    memory.observe("1:2:0", api, world, 1000, [spawn])
+    memory.observe("1:2:0", api, world, 1000, "map")
     assert.equal(situate(api, world, memory).bossSeen, true)
     boss.x = centre(7)
     boss.y = centre(3)
-    memory.observe("1:2:0", api, world, 3000, [spawn])
+    memory.observe("1:2:0", api, world, 3000, "map")
     sit = situate(api, world, memory)
     assert.deepEqual([sit.bossSource, sit.goalCell], ["seen", [7, 1]])
     assert.match(String(facts(api, world, sit, []).goal), /last seen 2 s ago/)
 
     boss.x = centre(4)
     world.x = centre(7)
-    memory.observe("1:2:0", api, world, 4000, [spawn])
+    memory.observe("1:2:0", api, world, 4000, "map")
     assert.equal(situate(api, world, memory).bossSeen, false)
     sit = situate(api, world, memory)
-    assert.deepEqual([sit.bossSource, sit.goalCell], ["spawn", spawn], "дошли — босса нет, к точке появления")
+    assert.deepEqual([sit.goal, sit.bossSource], ["explore", ""], "дошли — босса нет, разведка дальше")
+
+    world.x = centre(1)
+    memory.observe("1:2:1", api, world, 5000, "map")
+    sit = situate(api, world, memory)
+    assert.deepEqual([sit.goal, sit.bossSource, sit.goalCell], ["boss", "earlier", [7, 1]], "новая попытка с памятью карты")
+    assert.match(String(facts(api, world, sit, []).goal), /seen there on an earlier attempt/)
+    const fresh = new Memory()
+    fresh.observe("1:2:1", api, world, 5000, "map:1")
+    assert.equal(situate(api, world, fresh).goal, "explore", "без памяти карты — только разведка")
 })
 
 test("теневой мир: сложность сменили в паузе посреди уровня — карта та же, пропусков нет", () => {
@@ -307,7 +339,6 @@ test("теневой мир: сложность сменили в паузе п�
     assert.equal(changed.difficulty, api.DIFF_EASY)
     const fresh = new Shadow(api).sync(snapshotOf(link, world, api.DIFF_EASY))
     assert.ok(fresh, "мост, запущенный уже после смены сложности, тоже находит карту")
-    assert.deepEqual(new Shadow(api).spawns, [])
 })
 
 class FakeTransport {
@@ -380,15 +411,22 @@ test("прогноз: факты описывают момент прихода 
         const bridge = new Bridge(api, transport, async (s) => { states.push(s); return always("advance", 500)(s) }, () => {}, () => link.clock, 1, { predict })
         transport.send(api.aiSnapshot(link, world, api.DIFF_NORMAL) as string[])
         await bridge.idle()
+        // The whole map seen, so the goal is the exit and steps to it only shrink on the way.
+        for (let y = 0; y < world.h; y++) for (let x = 0; x < world.w; x++) bridge.known.mark(x, y)
+        link.clock = 250
+        transport.send(api.aiSnapshot(link, world, api.DIFF_NORMAL) as string[])
+        await bridge.idle()
+        assert.match(String(states[1].goal), /reach the exit/)
+        const before = bridge.stats.predicted
         if (moveOff) {
             const far = farCell(world, start)
             world.x = centre(far[0])
             world.y = centre(far[1])
         }
-        link.clock = 250
+        link.clock = 500
         transport.send(api.aiSnapshot(link, world, api.DIFF_NORMAL) as string[])
         await bridge.idle()
-        return { steps: Number(String(states[1].goal).match(/(\d+) steps/)?.[1]), predicted: bridge.stats.predicted }
+        return { steps: Number(String(states[2].goal).match(/(\d+) steps/)?.[1]), predicted: bridge.stats.predicted - before }
     }
     const plain = await run(false, false)
     const ahead = await run(true, false)
@@ -486,13 +524,35 @@ test("сценарий: HANGAR с 30 HP, Jev всегда отвечает advan
     assert.ok(sim.world.health > 30)
 })
 
-test("сценарий: HANGAR NORMAL с задержкой Jev 500 мс — простой вне боя меньше 15%, пауз дольше 600 мс нет", async () => {
+// Of the sim's idle time (no step, no fight), the part without a turn either: standing still.
+function stillness(sim: SimConsole): { ms: number; longest: number } {
+    const out = { ms: 0, longest: 0 }
+    let run = 0
+    const step = sim.step.bind(sim)
+    sim.step = () => {
+        const ang = sim.world.ang
+        const idle = sim.idleMs
+        step()
+        const dt = sim.idleMs - idle
+        if (dt > 0 && sim.world.ang === ang) {
+            out.ms += dt
+            run += dt
+            out.longest = Math.max(out.longest, run)
+        } else run = 0
+    }
+    return out
+}
+
+test("сценарий: HANGAR NORMAL с задержкой Jev 500 мс — вне боя стоит без шага и поворота меньше 15%, пауз дольше 600 мс нет; с поворотами на месте — меньше 30%", async () => {
     const sim = new SimConsole(levelIndex(api, "HANGAR"), api.DIFF_NORMAL, 5)
+    const still = stillness(sim)
     await drive(sim, fakeJev, 500, 120000)
     assert.equal(sim.result, "won")
+    const share = still.ms / sim.playMs
+    assert.ok(share < 0.15, `стоит ${(share * 100).toFixed(1)}%`)
+    assert.ok(still.longest <= 600, `пауза ${still.longest} мс`)
     const idle = sim.idleMs / sim.playMs
-    assert.ok(idle < 0.15, `простой ${(idle * 100).toFixed(1)}%`)
-    assert.ok(sim.longestIdleMs <= 600, `пауза ${sim.longestIdleMs} мс`)
+    assert.ok(idle < 0.3, `без шага, с поворотами осмотра ${(idle * 100).toFixed(1)}%`)
 })
 
 test("сценарий: ARENA EASY — фейковый Jev находит босса и проходит", async () => {

@@ -1,11 +1,14 @@
 // Turns the shadow world into (a) a situation the bridge can act on and (b) plain English facts
 // for Jev. Facts describe; they never prescribe an action. Enemies and fireballs only count when
-// they are in sight now (or, for enemies, were in the last few seconds); the map itself is known.
+// they are in sight now (or, for enemies, were in the last few seconds). Of the map only the
+// cells the player has seen count: routes, items, lava and the exit come from knownWorld().
 import type { LogicApi, World } from "../load-logic.ts"
+import { isFrontier, knownWorld, nearestFrontier, nearestStale } from "./explore.ts"
 import { inSight, MEMORY_MS, Memory } from "./memory.ts"
 import { angleDiff, angleTo, exitSpot, findPath, KEY_ITEMS, passable, planRoute, type Cell } from "./route.ts"
 
-export type GoalKind = "key" | "exit" | "boss" | "none"
+// `explore`: the goal is not known yet, or no known way leads to it; walk to the nearest unseen part.
+export type GoalKind = "key" | "exit" | "boss" | "explore" | "none"
 
 export interface EnemyView {
     i: number
@@ -53,11 +56,20 @@ export interface Situation {
     goalCell: Cell | null
     // Boss goal only: in sight now, or where it is being looked for.
     bossSeen: boolean
-    bossSource: "seen" | "spawn" | ""
+    bossSource: "seen" | "earlier" | ""
     bossAgeMs: number
+    // What the level needs next (exit, or the boss while the exit is locked), and whether the
+    // player has seen it; an explore goal says why it explores with these two.
+    seeking: "exit" | "boss"
+    seekingKnown: boolean
+    // Explore goal with nothing unexplored left: how long ago the cell being looked over again
+    // was on screen (0 for a real frontier).
+    recheckMs: number
     steps: number
     // Grid path from the player's cell to the goal; the last cell is the exit tile itself.
     path: Cell[]
+    // Explore goal: unseen cells straight on past the frontier, walked into if they are floor.
+    beyond: Cell[]
     // First GOTO waypoint along the path (straight, at most 2 cells).
     next: Cell | null
     back: Cell | null
@@ -79,6 +91,9 @@ const KEY_NAMES: Record<number, string> = { 1: "red", 2: "blue" }
 const NEAR_ENEMIES = 4
 const ENEMY_RANGE = 8
 const LAVA_RANGE = 2
+// While exploring, a seen key this close is picked up before the next unexplored area: walking
+// back for it once its door turned up cost D1 about 70 steps.
+const KEY_NEAR = 12
 const BITE_MARGIN = 150
 export const ROUTE_CELLS = 6
 const ROUTE_POINTS = 3
@@ -90,8 +105,10 @@ const centreOf = (api: LogicApi, c: Cell): [number, number] => [c[0] * api.FP + 
 
 // Up to 3 GOTO points along a grid path (path[0] is the player's cell), covering at most
 // `maxCells` cells. Each point is a straight run of 1-2 cells from the one before, so an older
-// console that only reads the first point still accepts it.
-export function waypoints(path: Cell[], maxCells = ROUTE_CELLS): Cell[] {
+// console that only reads the first point still accepts it. From index `each` on every cell is a
+// point of its own, so the console, which drops a route from its first bad leg, keeps the cells
+// before an unseen one that is a wall.
+export function waypoints(path: Cell[], maxCells = ROUTE_CELLS, each = Infinity): Cell[] {
     const cells = path.slice(0, maxCells + 1)
     const out: Cell[] = []
     let from = cells[0]
@@ -101,12 +118,45 @@ export function waypoints(path: Cell[], maxCells = ROUTE_CELLS): Cell[] {
         const n = cells[i + 1]
         const turns = !last && (n[0] - c[0] !== c[0] - cells[i - 1][0] || n[1] - c[1] !== c[1] - cells[i - 1][1])
         const run = Math.abs(c[0] - from[0]) + Math.abs(c[1] - from[1])
-        if (last || turns || run >= SEGMENT) {
+        if (last || turns || run >= SEGMENT || i >= each) {
             out.push(c)
             from = c
         }
     }
     return out
+}
+
+// GOTO points along the known path and on into the unseen cells past it.
+export function walkPoints(path: Cell[], beyond: Cell[], maxCells = ROUTE_CELLS): Cell[] {
+    return beyond.length > 0 ? waypoints([...path, ...beyond], maxCells, path.length - 1) : waypoints(path, maxCells)
+}
+
+// Every cell a GOTO walks: straight legs from `from` through each point.
+export function legCells(from: Cell, points: Cell[]): Cell[] {
+    const out: Cell[] = [from]
+    for (const p of points) {
+        const last = out[out.length - 1]
+        const dx = Math.sign(p[0] - last[0])
+        const dy = Math.sign(p[1] - last[1])
+        if (dx !== 0 && dy !== 0) break
+        for (let c: Cell = last; !same(c, p); ) {
+            c = [c[0] + dx, c[1] + dy]
+            out.push(c)
+        }
+    }
+    return out
+}
+
+// The walk planned from where the command in flight takes the player (`ahead`, the predicted
+// situation), led there along that command's cells (`sent`). The console finds the player on
+// this route whether the answer lands before or after it gets there; a route from the snapshot's
+// cell that turns back is off the route once the player walked on, and the console drops it.
+export function throughAhead(now: Situation, ahead: Situation, sent: Cell[]): Situation {
+    const i = sent.findIndex((c) => same(c, now.at))
+    const j = sent.findIndex((c) => same(c, ahead.at))
+    if (i < 0 || j <= i || ahead.path.length === 0 || (ahead.goal === "boss" && ahead.bossSeen)) return now
+    const path = [...sent.slice(i, j), ...ahead.path]
+    return { ...now, goal: ahead.goal, goalCell: ahead.goalCell, path, beyond: ahead.beyond, next: walkPoints(path, ahead.beyond)[0] ?? null }
 }
 
 // Kept for callers that only want the first point.
@@ -171,7 +221,7 @@ function nearestItem(api: LogicApi, world: World, at: Cell, kind: number, goalCe
 
 // Neighbour cell that takes the player farthest from what threatens it: enemies in sight or seen
 // in the last few seconds, and fireballs in sight. Null when nothing does.
-function backStep(api: LogicApi, world: World, at: Cell, memory: Memory, enemies: EnemyView[], remembered: RememberedView[]): Cell | null {
+function backStep(api: LogicApi, world: World, map: World, at: Cell, memory: Memory, enemies: EnemyView[], remembered: RememberedView[]): Cell | null {
     const threats: Array<[number, number]> = []
     for (const e of enemies) threats.push([world.enemies[e.i].x, world.enemies[e.i].y])
     for (const r of remembered) {
@@ -184,7 +234,7 @@ function backStep(api: LogicApi, world: World, at: Cell, memory: Memory, enemies
     let bestGap = -Infinity
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const cell: Cell = [at[0] + dx, at[1] + dy]
-        if (!passable(api, world, cell[0], cell[1], world.keys)) continue
+        if (!passable(api, map, cell[0], cell[1], world.keys)) continue
         const [cx, cy] = centreOf(api, cell)
         const gap = Math.min(...threats.map(([x, y]) => Math.hypot(x - cx, y - cy)))
         if (gap > bestGap) {
@@ -222,9 +272,33 @@ export function biteReach(api: LogicApi, kind: number): number {
     return api.ENEMY_BITE[kind] > 0 ? api.IMP_REACH + api.ENEMY_RADIUS[kind] - api.IMP_RADIUS + BITE_MARGIN : 0
 }
 
-export function situate(api: LogicApi, world: World, memory: Memory = new Memory()): Situation {
+// Nearest key on the known map the player does not hold, reachable now.
+function nearestKey(api: LogicApi, map: World, at: Cell): Cell | null {
+    let best: Cell | null = null
+    let bestLen = Infinity
+    for (const item of map.items) {
+        const bit = KEY_ITEMS[item.kind]
+        if (!bit || item.taken || (map.keys & bit) !== 0) continue
+        const len = pathTo(api, map, at, cellOf(item.x, item.y)).length
+        if (len > 0 && len < bestLen) {
+            best = cellOf(item.x, item.y)
+            bestLen = len
+        }
+    }
+    return best
+}
+
+// `world` is the live shadow world: enemies, fireballs, the crosshair and the door ahead are read
+// from the current view. Planning (goal, path, items, lava) sees only what memory.known holds.
+// Without a memory the situation is built from what is on screen right now.
+export function situate(api: LogicApi, world: World, memory?: Memory): Situation {
+    if (!memory) {
+        memory = new Memory()
+        memory.observe("now", api, world, 0)
+    }
+    const map = knownWorld(api, world, memory.known)
     const at = cellOf(world.x, world.y)
-    const exit = exitTile(api, world)
+    const exit = exitTile(api, map)
     const target = api.target(world)
     const near = world.enemies
         .map((e, i) => ({ e, i }))
@@ -259,43 +333,73 @@ export function situate(api: LogicApi, world: World, memory: Memory = new Memory
     let bossSeen = false
     let bossSource: Situation["bossSource"] = ""
     let bossAgeMs = 0
+    let seeking: Situation["seeking"] = "exit"
+    let seekingKnown = false
     const boss = memory.bossIndex(api, world)
+    let recheckMs = 0
+    const lookFor = () => {
+        const look = memory.bossTarget(api, world)
+        if (look) {
+            bossSource = look.source
+            bossAgeMs = look.ageMs
+        }
+        return look?.cell ?? null
+    }
     if (world.exitLocked && boss >= 0) {
-        goal = "boss"
+        seeking = "boss"
         const b = world.enemies[boss]
         bossSeen = inSight(api, world, b.x, b.y)
-        if (bossSeen) {
-            goalCell = cellOf(b.x, b.y)
-        } else {
-            const look = memory.bossTarget(api, world)
-            if (look) {
-                goalCell = look.cell
-                bossSource = look.source
-                bossAgeMs = look.ageMs
-            }
-        }
-        if (goalCell && pathTo(api, world, at, goalCell).length === 0) {
-            const route = planRoute(api, world, at, goalCell)
+        const cell = bossSeen ? cellOf(b.x, b.y) : lookFor()
+        seekingKnown = cell !== null
+        if (cell && pathTo(api, map, at, cell).length > 0) {
+            goal = "boss"
+            goalCell = cell
+        } else if (cell) {
+            const route = planRoute(api, map, at, cell)
             if (route && route.length > 1) {
-                goalCell = route[0]
                 goal = "key"
+                goalCell = route[0]
+            } else if (bossSeen) {
+                goal = "boss"
+                goalCell = cell
             }
         }
     } else if (exit) {
-        const route = planRoute(api, world, at, exit.spot)
-        goalCell = route ? route[0] : exit.spot
-        goal = route && route.length > 1 ? "key" : "exit"
+        seekingKnown = true
+        const route = planRoute(api, map, at, exit.spot)
+        if (route) {
+            goalCell = route[0]
+            goal = route.length > 1 ? "key" : "exit"
+        }
     }
-    let path: Cell[] = goalCell ? pathTo(api, world, at, goalCell) : []
+    let beyond: Cell[] = []
+    if (goal === "none") {
+        const commit = memory.observed === world
+        const key = nearestKey(api, map, at)
+        const frontier = nearestFrontier(api, map, memory.known, at, commit)
+            ?? (key || seeking !== "boss" ? null : nearestStale(api, map, memory.known, at, memory.now, commit))
+        const keyFirst = key !== null && (!frontier || pathTo(api, map, at, key).length - 1 <= KEY_NEAR)
+        if (keyFirst) {
+            goal = "key"
+            goalCell = key
+        } else if (frontier) {
+            goal = "explore"
+            goalCell = frontier.cell
+            beyond = frontier.beyond
+            if (!isFrontier(api, map, memory.known, frontier.cell)) recheckMs = memory.known.ageMs(frontier.cell[0], frontier.cell[1], memory.now)
+        }
+    }
+    let path: Cell[] = goalCell ? pathTo(api, map, at, goalCell) : []
     if (goal === "exit" && exit && path.length > 0) path = [...path, exit.tile]
-    let next = waypoints(path)[0] ?? null
+    if (path.length === 0) beyond = []
+    let next = walkPoints(path, beyond)[0] ?? null
     if (goal === "boss" && bossSeen && path.length > 0 && path.length <= 2) next = null
     let aroundLava = false
     if (goalCell && path.length > 1) {
-        const direct = findPath(api, world, at, goalCell, world.keys, false)
-        aroundLava = direct.length > 0 && direct.length < pathTo(api, world, at, goalCell).length
+        const direct = findPath(api, map, at, goalCell, world.keys, false)
+        aroundLava = direct.length > 0 && direct.length < pathTo(api, map, at, goalCell).length
     }
-    const steps = Math.max(0, (goalCell ? pathTo(api, world, at, goalCell).length : 0) - 1)
+    const steps = Math.max(0, (goalCell ? pathTo(api, map, at, goalCell).length : 0) - 1)
     return {
         at,
         goal,
@@ -303,29 +407,42 @@ export function situate(api: LogicApi, world: World, memory: Memory = new Memory
         bossSeen,
         bossSource,
         bossAgeMs,
+        seeking,
+        seekingKnown,
+        recheckMs,
         steps,
         path,
+        beyond,
         next,
-        back: backStep(api, world, at, memory, enemies, remembered),
-        medkit: world.health < 100 ? nearestItem(api, world, at, api.ITEM_HEALTH, goalCell, steps) : null,
-        ammo: nearestItem(api, world, at, api.ITEM_AMMO, goalCell, steps),
-        shotgun: world.hasShotgun ? null : nearestItem(api, world, at, api.ITEM_SHOTGUN, goalCell, steps),
+        back: backStep(api, world, map, at, memory, enemies, remembered),
+        medkit: world.health < 100 ? nearestItem(api, map, at, api.ITEM_HEALTH, goalCell, steps) : null,
+        ammo: nearestItem(api, map, at, api.ITEM_AMMO, goalCell, steps),
+        shotgun: world.hasShotgun ? null : nearestItem(api, map, at, api.ITEM_SHOTGUN, goalCell, steps),
         enemies,
         remembered,
         fireballs: fireballs(api, world),
         doorAhead: doorAhead(api, world),
         target,
-        lava: nearestLava(api, world, at),
+        lava: nearestLava(api, map, at),
         aroundLava,
     }
 }
 
+function exploreText(sit: Situation): string {
+    if (sit.recheckMs > 0) return `boss not in sight and the map is explored: look again at an area last seen ${(sit.recheckMs / 1000).toFixed(0)} s ago, ${sit.steps} steps away`
+    const why = sit.seeking === "boss"
+        ? sit.seekingKnown ? "no known way to the boss yet" : "boss not found yet"
+        : sit.seekingKnown ? "exit seen, no known way to it yet" : "exit not found yet"
+    return `exploring: ${why}, unexplored area ${sit.steps} steps away`
+}
+
 function goalText(api: LogicApi, world: World, sit: Situation): string {
-    if (sit.goal === "none") return "no goal visible"
+    if (sit.goal === "none") return sit.seeking === "boss" ? "boss not found, nothing left to explore" : "exit not found, nothing left to explore"
+    if (sit.goal === "explore") return exploreText(sit)
     if (sit.goal === "boss") {
         if (sit.bossSeen) return `kill the boss to unlock the exit, ${sit.steps} steps away`
         if (sit.bossSource === "seen") return `find the boss to unlock the exit, last seen ${(sit.bossAgeMs / 1000).toFixed(0)} s ago, ${sit.steps} steps away`
-        if (sit.bossSource === "spawn") return `find the boss to unlock the exit, it appears ${sit.steps} steps away`
+        if (sit.bossSource === "earlier") return `find the boss to unlock the exit, seen there on an earlier attempt, ${sit.steps} steps away`
         return "find the boss to unlock the exit"
     }
     if (sit.goal === "key") {

@@ -4,10 +4,11 @@ import type { LogicApi, World } from "../load-logic.ts"
 import { applyLesson, decide, lessonLabel, mustHeal, type Decision } from "./decide.ts"
 import type { Action, JevAnswer, JevFn } from "./jev.ts"
 import { activeLesson, learn, lessonText, postMortem, Trace, type ActiveLesson, type Learned, type LessonStore, type ReflectFn } from "./lessons.ts"
-import { boxWrites, encodeBox, nextSeq, type BoxWrite } from "./mailbox.ts"
+import type { KnownMap } from "./explore.ts"
+import { boxWrites, CMD, encodeBox, nextSeq, type BoxWrite } from "./mailbox.ts"
 import { routeOf, type Route } from "./map.ts"
 import { Memory } from "./memory.ts"
-import { facts, progressText, situate, type Situation } from "./observe.ts"
+import { facts, legCells, progressText, situate, throughAhead, type Situation } from "./observe.ts"
 import { Parser, type Snapshot } from "./protocol.ts"
 import type { Cell } from "./route.ts"
 import { Shadow } from "./shadow.ts"
@@ -94,6 +95,8 @@ export interface BridgeOptions {
     predict?: boolean
     // Death lessons: where they live and who writes them (null reflect: the rule only).
     lessons?: { store: LessonStore; reflect: ReflectFn | null } | null
+    // Keep the explored map of a level across its attempts in this bridge run (default on).
+    mapMemory?: boolean
 }
 
 interface Sent {
@@ -113,6 +116,7 @@ export class Bridge {
     private readonly shadow: Shadow
     private readonly ahead: Shadow
     private readonly memory = new Memory()
+    private readonly mapMemory: boolean
     private latest: Snapshot | null = null
     private decided = ""
     private inFlight: Promise<void> | null = null
@@ -163,7 +167,13 @@ export class Bridge {
         this.seq = seq
         this.predict = opts.predict ?? true
         this.lessons = opts.lessons ?? null
+        this.mapMemory = opts.mapMemory ?? true
         transport.onLine((line) => this.line(line))
+    }
+
+    // Cells the player has seen on the level it plays (`known.rows()` for a map with fog).
+    get known(): KnownMap {
+        return this.memory.known
     }
 
     // Resolves once the request in flight (if any) has written its command.
@@ -270,11 +280,12 @@ export class Bridge {
         }
         const level = `${snap.run}:${snap.lvl}:${this.attempt}`
         this.countPickups(`${snap.run}:${snap.lvl}`, world)
-        this.memory.observe(level, this.api, world, snap.t, this.shadow.spawns)
+        this.memory.observe(level, this.api, world, snap.t, this.mapMemory ? `${snap.lvl}:${snap.hash}` : `${level}:${snap.hash}`)
         const sit = situate(this.api, world, this.memory)
         this.route = routeOf(this.api, world, sit, this.memory, `${snap.run}:${snap.lvl}:${snap.hash}`)
         const stalledMs = this.stalled(level, snap, sit)
         const view = this.predicted(snap) ?? { world, sit }
+        const plan = this.planned(sit, view.sit)
         const recent = this.history.map((h) => `${h.action} ${h.result}`)
         const goal = `${snap.lvl}:${view.sit.goal}:${view.sit.goalCell}`
         const lesson = this.activeLesson(world, sit)
@@ -295,7 +306,7 @@ export class Bridge {
             const taught = applyLesson(lesson?.action ?? null, pick, watchdog)
             const override = taught !== pick
             if (override) this.stats.lessonOverride++
-            const decision = decide(this.api, world, sit, taught, answer.danger)
+            const decision = decide(this.api, world, plan, taught, answer.danger)
             if (override) decision.label = lessonLabel(decision.label)
             if (this.lessons) this.tracePick(snap, sit, answer.action, decision.action, lesson)
             return { decision, note: { ...(lesson ? { lesson: lesson.lesson.id, override } : {}), ...(forced ? { forced } : {}) } }
@@ -350,6 +361,13 @@ export class Bridge {
         this.stats.watchdog++
         this.log({ kind: "watchdog", at: this.now(), n: snap.n, lvl: snap.lvl, reason: `still for ${stalledMs} ms` })
         return true
+    }
+
+    // A walk from the predicted cell, led there along the GOTO in the box (see throughAhead).
+    private planned(sit: Situation, ahead: Situation): Situation {
+        const s = this.sent
+        if (ahead === sit || !s || s.cmd !== CMD.goto) return sit
+        return throughAhead(sit, ahead, legCells(s.from, [[s.a, s.b], ...s.route]))
     }
 
     // The shadow world run forward by the usual Jev latency under the command already in the box,

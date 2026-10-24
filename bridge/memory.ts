@@ -1,6 +1,8 @@
-// What the player has seen: the last sighting of each enemy on this level, and where the boss
-// might be. Jev only ever hears about enemies that are in sight now or were in the last 5 s.
+// What the player has seen: the cells of the level (fog of war), the last sighting of each enemy
+// on this attempt, and where the boss might be. Jev only ever hears about enemies that are in
+// sight now or were in the last 5 s, and about map cells that were on screen.
 import type { LogicApi, World } from "../load-logic.ts"
+import { KnownMap } from "./explore.ts"
 import type { Cell } from "./route.ts"
 
 export const MEMORY_MS = 5000
@@ -16,7 +18,8 @@ export interface Sighting {
 
 export interface BossTarget {
     cell: Cell
-    source: "seen" | "spawn"
+    // Seen on this attempt, or only on an earlier one (the known map remembers it).
+    source: "seen" | "earlier"
     ageMs: number
 }
 
@@ -28,21 +31,26 @@ export function inSight(api: LogicApi, world: World, x: number, y: number): bool
 
 export class Memory {
     now = 0
-    // Enemy spawn cells from the map, by enemy index.
-    spawns: Cell[] = []
     readonly last = new Map<number, Sighting>()
     // Boss search spots already walked to without finding it.
     readonly checked = new Set<string>()
+    readonly known = new KnownMap()
+    // The world of the last observe(); a situation on any other (a prediction) only reads memory.
+    observed: World | null = null
     private key = ""
 
-    // Call once per trusted snapshot; a new key (run or level) forgets everything.
-    observe(key: string, api: LogicApi, world: World, now: number, spawns: Cell[] = this.spawns): void {
+    // Call once per trusted snapshot; a new key (run, level or attempt) forgets the sightings.
+    // `mapKey` names the known map: the same key on a retry keeps what was explored before.
+    observe(key: string, api: LogicApi, world: World, now: number, mapKey: string = key): void {
         if (key !== this.key) {
             this.key = key
             this.last.clear()
             this.checked.clear()
+            this.known.target = null
         }
-        this.spawns = spawns
+        if (mapKey !== this.known.key) this.known.reset(mapKey, world.w, world.h)
+        this.known.see(api, world, now)
+        this.observed = world
         this.now = now
         world.enemies.forEach((e, i) => {
             if (e.dead) {
@@ -51,12 +59,26 @@ export class Memory {
             }
             if (!inSight(api, world, e.x, e.y)) return
             this.last.set(i, { i, kind: e.kind, x: e.x, y: e.y, at: now })
-            if (e.kind === api.ENEMY_BOSS) this.checked.clear()
+            if (e.kind === api.ENEMY_BOSS) {
+                this.checked.clear()
+                this.known.boss = [e.x >> 10, e.y >> 10]
+            }
         })
         const boss = this.bossIndex(api, world)
         if (boss < 0 || inSight(api, world, world.enemies[boss].x, world.enemies[boss].y)) return
         const target = this.bossTarget(api, world)
         if (target && target.cell[0] === world.x >> 10 && target.cell[1] === world.y >> 10) this.checked.add(cellKey(target.cell))
+    }
+
+    // observe() while turning on the spot: facing each way in turn, then back as before.
+    lookAround(key: string, api: LogicApi, world: World, now: number): void {
+        const ang = world.ang
+        for (let a = 0; a < api.ANGLES; a += api.ANGLES / 4) {
+            world.ang = a
+            this.observe(key, api, world, now)
+        }
+        world.ang = ang
+        this.observe(key, api, world, now)
     }
 
     // Enemies out of sight now but seen in the last MEMORY_MS, freshest first.
@@ -72,19 +94,18 @@ export class Memory {
         return world.enemies.findIndex((e) => !e.dead && e.kind === api.ENEMY_BOSS)
     }
 
-    // Where to look for a boss that is out of sight: where it was last seen, else where it appears.
+    // Where to look for a boss that is out of sight: where it was last seen on this attempt, else
+    // where an earlier attempt saw it. Null once both were walked to: then explore, or look again
+    // at areas not seen for a while (nearestStale).
     bossTarget(api: LogicApi, world: World): BossTarget | null {
         const boss = this.bossIndex(api, world)
         if (boss < 0) return null
         const candidates: BossTarget[] = []
         const seen = this.last.get(boss)
         if (seen) candidates.push({ cell: [seen.x >> 10, seen.y >> 10], source: "seen", ageMs: this.now - seen.at })
-        const spawn = this.spawns[boss]
-        if (spawn) candidates.push({ cell: spawn, source: "spawn", ageMs: 0 })
+        const earlier = this.known.boss
+        if (earlier && !candidates.some((c) => cellKey(c.cell) === cellKey(earlier))) candidates.push({ cell: earlier, source: "earlier", ageMs: 0 })
         if (candidates.length === 0) return null
-        const open = candidates.find((c) => !this.checked.has(cellKey(c.cell)))
-        if (open) return open
-        this.checked.clear()
-        return candidates[candidates.length - 1]
+        return candidates.find((c) => !this.checked.has(cellKey(c.cell))) ?? null
     }
 }

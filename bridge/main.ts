@@ -12,6 +12,8 @@
 // bridge/out/lessons-console.json or lessons-sim.json; --lessons-file FILE, --lessons-reset (start
 // empty; both imply --lessons); --attempts 10 (sim: retry a level after a death until it is won,
 // up to 10 attempts, the way the console does).
+// The AI explores: it knows only the cells it has seen. --no-map-memory forgets them on every new
+// attempt (by default a level's explored map stays for the rest of the bridge run, not on disk).
 // Jev needs OPENROUTER_KEY in the environment; JEV_MODEL overrides the model, LESSON_MODEL the
 // model that writes lessons.
 import fs from "node:fs"
@@ -167,6 +169,7 @@ interface SimOpts {
     // Above 1: retry after a death until the level is won, at most this many attempts.
     attempts: number
     lessons: BridgeOptions["lessons"]
+    mapMemory: boolean
 }
 
 // Answers in sim time: the request resolves once the sim clock has moved `lag` ms on.
@@ -244,7 +247,7 @@ async function simLevel(api: ReturnType<typeof loadLogic>, level: SimLevel, jev:
             log.write({ ...rec, run } as LogRecord)
             film?.record(rec)
             if (!opts.quiet) printDecision(rec)
-        }, now, undefined, { predict: opts.predict, lessons: opts.lessons })
+        }, now, undefined, { predict: opts.predict, lessons: opts.lessons, mapMemory: opts.mapMemory })
         film?.attach(bridge)
         const limit = opts.timeout * 1000 * Math.max(1, opts.attempts)
         const w0 = { hp: 0, kills: 0, total: 0 }
@@ -311,7 +314,7 @@ async function checkConsole(): Promise<void> {
     await usb.close()
 }
 
-async function runConsole(fake: boolean, filming: boolean, watch: WatchFlags | null, lessonFlags: LessonFlags): Promise<void> {
+async function runConsole(fake: boolean, filming: boolean, watch: WatchFlags | null, lessonFlags: LessonFlags, mapMemory: boolean): Promise<void> {
     const api = loadLogic()
     const jev = pickJev(fake)
     const log = openLog()
@@ -329,7 +332,7 @@ async function runConsole(fake: boolean, filming: boolean, watch: WatchFlags | n
         log.write(rec)
         film?.record(rec)
         printDecision(rec)
-    }, Date.now, undefined, { lessons })
+    }, Date.now, undefined, { lessons, mapMemory })
     film?.attach(bridge)
     const stop = async () => {
         console.log(summary(bridge.stats, (Date.now() - started) / 1000))
@@ -364,6 +367,7 @@ async function main(): Promise<void> {
             lessons: { type: "boolean", default: false },
             "lessons-file": { type: "string" },
             "lessons-reset": { type: "boolean", default: false },
+            "no-map-memory": { type: "boolean", default: false },
         },
     })
     const difficulty = DIFFICULTIES.indexOf(values.difficulty.toLowerCase())
@@ -372,7 +376,8 @@ async function main(): Promise<void> {
     const lessonFlags: LessonFlags = { on: values.lessons, file: values["lessons-file"], reset: values["lessons-reset"] }
     if (values.check) return checkConsole()
     const watch = values.watch ? { port: Number(values["watch-port"]), host: values["watch-host"] } : null
-    if (values.sim === undefined) return runConsole(values.fake, values.film, watch, lessonFlags)
+    const mapMemory = !values["no-map-memory"]
+    if (values.sim === undefined) return runConsole(values.fake, values.film, watch, lessonFlags, mapMemory)
     const lessons = openLessons(lessonFlags, "sim", values.fake)
     const film = await openRecording(values.film, watch, lessons?.store ?? null)
     await runSim({
@@ -390,6 +395,7 @@ async function main(): Promise<void> {
         quiet: values.quiet,
         attempts: Math.max(1, Number(values.attempts)),
         lessons,
+        mapMemory,
     })
     await film?.close()
 }

@@ -6,6 +6,7 @@ import { fakeJev, fakePick } from "./fake-jev.ts"
 import { ACTIONS, makeJev, parseAnswer, type JevAnswer, type JevFn } from "./jev.ts"
 import { Bridge, type LogRecord } from "./loop.ts"
 import { CMD } from "./mailbox.ts"
+import { Memory } from "./memory.ts"
 import { facts, situate, straightStep } from "./observe.ts"
 import { Parser, type Snapshot } from "./protocol.ts"
 import { sessionFor, Shadow } from "./shadow.ts"
@@ -90,7 +91,15 @@ test("наблюдение: шаг маршрута — до 2 клеток по
 
 test("наблюдение: ключ раньше выхода, если дверь заперта; босс, пока выход закрыт", () => {
     const world = api.createWorld(["#######", "#S.R.X#", "##.####", "##r####", "#######"], 0)
-    const sit = situate(api, world)
+    const memory = new Memory()
+    memory.observe("t", api, world, 0)
+    const start = situate(api, world, memory)
+    assert.equal(start.goal, "explore", "ключ в нише и выход за дверью со старта не видны")
+    assert.doesNotMatch(JSON.stringify(facts(api, world, start, [])), /red key/)
+    world.x = 2 * 1024 + 512
+    world.ang = 256
+    memory.observe("t", api, world, 500)
+    const sit = situate(api, world, memory)
     assert.equal(sit.goal, "key")
     assert.deepEqual(sit.goalCell, [2, 3])
     assert.match(String(facts(api, world, sit, []).goal), /red key/)
@@ -151,12 +160,16 @@ test("решения: каждое действие Jev даёт свою ком
     const world = api.createWorld(["#########", "#S....E.#", "#..H....#", "#########"], 0)
     world.enemies[0].sees = true
     world.health = 50
-    const sit = situate(api, world)
+    const memory = new Memory()
+    memory.observe("t", api, world, 0)
+    assert.equal(decide(api, world, situate(api, world, memory), "advance").cmd, CMD.goto, "выхода не видно — идёт исследовать")
+    for (let y = 0; y < world.h; y++) for (let x = 0; x < world.w; x++) memory.known.mark(x, y)
+    const sit = situate(api, world, memory)
     const got = (a: (typeof ACTIONS)[number]) => {
         const d = decide(api, world, sit, a)
         return [d.action, d.cmd, d.a, d.b]
     }
-    assert.deepEqual(got("advance").slice(0, 2), ["wait", CMD.wait], "выхода нет — стоит")
+    assert.deepEqual(got("advance").slice(0, 2), ["wait", CMD.wait], "карта изучена, выхода нет — стоит")
     assert.deepEqual(got("attack"), ["attack", CMD.attack, 0, 0])
     assert.deepEqual(got("dodge_left"), ["dodge_left", CMD.strafe, 0, 0])
     assert.deepEqual(got("dodge_right"), ["dodge_right", CMD.strafe, 1, 0])

@@ -9,7 +9,7 @@ export type Action = (typeof ACTIONS)[number]
 const INSTRUCTIONS = "You are the player in a first-person maze shooter. Pick the best action for the next half second to survive and reach the goal."
 
 const CRITERIA: Record<Action, string> = {
-    advance: "Walk along the route toward the goal (key, then its door, then the exit)",
+    advance: "Walk along the route toward the goal (key, then its door, then the exit), or explore while the goal is not found yet",
     attack: "Turn to the nearest visible enemy and shoot it",
     dodge_left: "Sidestep to the player's left; this is the safe move when a fireball's safe_side is left",
     dodge_right: "Sidestep to the player's right; this is the safe move when a fireball's safe_side is right",

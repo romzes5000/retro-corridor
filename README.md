@@ -69,14 +69,20 @@ do next. The game never waits for it: it keeps running at full speed and execute
 1. Every 250 ms the console prints a snapshot over the HF2 serial channel: player, live enemies,
    fireballs, doors, picked-up items (`AI S ...` to `AI END`). The map never goes over the wire.
 2. The bridge rebuilds the same level from the game code (`load-logic.ts`) and checks the console's
-   map hash, then works out the route (key, its door, the exit, or the boss while the exit is locked).
+   map hash, but plans only over what the player has seen: the cells the rays of the 160 screen
+   columns crossed, plus the player's own cell and the four around it. Walls, doors, lava, items,
+   keys, the exit and the boss count once they were on screen. Over those cells it works out the
+   route (key, its door, the exit, or the boss while the exit is locked); while the goal is not
+   seen yet or no seen way leads to it, it walks to the nearest unexplored edge, turning there to
+   look. A boss not in sight on an explored map is looked for again where nobody looked for 10 s.
 3. It describes the situation in plain English and asks Jev (TypeSafe System One,
    `/api/v1/systemone` on OpenRouter) to pick one tactic: advance, attack, dodge left or right,
    retreat, heal, ammo, weapon (go for the shotgun), open, wait. The facts: goal, health state,
    weapon, enemies in sight (and whether they can bite), enemies seen in the last 5 s, the safe side
    of an incoming fireball, medkit, ammo and shotgun with the detour each costs, nearby lava, the
-   outcome of the last commands. Only what the player can see counts: no enemies through walls; a
-   boss out of sight is looked for where it was last seen, then where it appears. The facts
+   outcome of the last commands. Only what the player can see counts: no enemies through walls, no
+   exit or medkit before it was seen; a boss out of sight is looked for where it was last seen, then
+   where an earlier attempt saw it. The facts
    describe the moment the answer will land: the bridge runs its copy of the world forward by the
    usual Jev latency under the command already playing.
 4. The tactic becomes one short command (walk a route of up to 3 straight legs, attack enemy N,
@@ -114,7 +120,9 @@ npm run ai:probe -- --variants       # latency of action only / action + danger 
 ```
 
 `--no-reflexes` turns off the console reflexes and `--no-predict` the forward run of the facts, to
-measure what each adds.
+measure what each adds. The map explored on a level stays for its next attempts while the bridge
+runs (in memory only); `--no-map-memory` makes every attempt start in the dark. Cells seen while you
+hold the controls are not added: the console sends no snapshots then.
 
 To film AI play on the console, add `--film`: the bridge writes every snapshot and decision to
 `bridge/out/film-*.jsonl`, and `npm run ai:film -- bridge/out/film-X.jsonl` renders it with the
@@ -131,7 +139,8 @@ current level first, the one in force highlighted) and a feed of Jev's decisions
 new lessons and overrides in colour. Below the picture, a separate top-down map of the level: walls,
 doors in their key colour (open, closed, locked), lava, the exit, items not taken yet, the player and
 where it faces, enemies in sight and those seen in the last 5 s (no others), fireballs in sight, and the
-bridge's goal with the path it follows, updated 4 times a second; `/map` shows the map alone.
+bridge's goal with the path it follows, updated 4 times a second; cells the player has not seen yet
+stay dark, with their doors and items. `/map` shows the map alone.
 `NO SIGNAL` means no snapshot for 1.5 s. `--watch-port` changes the port;
 `--watch-host 0.0.0.0` opens it to the local network, for a phone. Works with `--sim` too.
 

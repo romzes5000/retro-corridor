@@ -3,7 +3,8 @@
 import type { LogicApi, World } from "../load-logic.ts"
 import type { Action } from "./jev.ts"
 import { activeLesson, lessonText, type ActiveLesson, type Lesson } from "./lessons.ts"
-import { facts, situate } from "./observe.ts"
+import { Memory } from "./memory.ts"
+import { facts, situate, type Situation } from "./observe.ts"
 
 export interface Scenario {
     name: string
@@ -109,17 +110,24 @@ export function scenarioWorld(api: LogicApi, sc: Scenario): World {
     return world
 }
 
+// The player knows only what it has seen: in a scenario it has turned around once where it stands.
+function scenarioSituation(api: LogicApi, world: World): Situation {
+    const memory = new Memory()
+    memory.lookAround("eval", api, world, 0)
+    return situate(api, world, memory)
+}
+
 export function scenarioLesson(api: LogicApi, sc: Scenario): ActiveLesson | null {
     if (!sc.lesson) return null
     const world = scenarioWorld(api, sc)
-    return activeLesson(api, world, situate(api, world), [sc.lesson], "eval")
+    return activeLesson(api, world, scenarioSituation(api, world), [sc.lesson], "eval")
 }
 
 // The facts Jev gets for the scenario, the same way the bridge builds them.
 export function scenarioState(api: LogicApi, sc: Scenario): Record<string, unknown> {
     const world = scenarioWorld(api, sc)
     const lesson = scenarioLesson(api, sc)
-    return facts(api, world, situate(api, world), [], "new goal", { lesson: lesson ? lessonText(lesson) : undefined })
+    return facts(api, world, scenarioSituation(api, world), [], "new goal", { lesson: lesson ? lessonText(lesson) : undefined })
 }
 
 export function judge(sc: Scenario, pick: string): boolean {

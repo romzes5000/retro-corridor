@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --test logic.test.ts campaign.test.ts combat.test.ts feel.test.ts gfx.test.ts render.test.ts play.test.ts procgen.test.ts ai.test.ts ai-route.test.ts pilot.test.ts bridge/bridge.test.ts bridge/eval.test.ts bridge/tactics.test.ts bridge/film.test.ts bridge/lessons.test.ts bridge/live.test.ts bridge/map.test.ts bridge/hf2-frame.test.ts tools/sprite-import.test.ts demo/make-gifs.test.ts",
+    "test": "node --experimental-strip-types --test logic.test.ts campaign.test.ts combat.test.ts feel.test.ts gfx.test.ts render.test.ts play.test.ts procgen.test.ts ai.test.ts ai-route.test.ts pilot.test.ts bridge/bridge.test.ts bridge/eval.test.ts bridge/tactics.test.ts bridge/film.test.ts bridge/lessons.test.ts bridge/live.test.ts bridge/map.test.ts bridge/explore.test.ts bridge/hf2-frame.test.ts tools/sprite-import.test.ts demo/make-gifs.test.ts",
     "demo": "node --experimental-strip-types demo/make-gifs.ts",
     "sprites": "node --experimental-strip-types tools/sprite-import.ts",
     "ai": "node --experimental-strip-types bridge/main.ts",
