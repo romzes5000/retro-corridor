@@ -301,6 +301,98 @@ test("тревога: строка JEV красная при danger от 60%, б
     assert.ok(alarm.yellow < calm.yellow, "строка перекрашена, а не дорисована")
 })
 
+// A shooter waits down the side corridor; it comes into view only at the corner cell 4,1.
+const CORNER = ["#########", "#S...####", "####.####", "####.####", "####.####", "####F####", "#########"]
+
+interface Peeked {
+    seenAt: number
+    shotAt: number
+    // Shooter hp when it threw its first fireball (3 = untouched).
+    hpAtFireball: number
+    // Player cell and facing when the command finished.
+    arrived: number[]
+    ang: number
+}
+
+function corner(command: Omit<BoxCommand, "seq">): Peeked & { world: World; link: any } {
+    const world = c.createWorld(CORNER, 0)
+    const link = linkFor(world)
+    const box = new Box()
+    c.aiSnapshot(link, world, c.DIFF_NORMAL)
+    box.send({ ...command, obs: link.obs })
+    const out: Peeked = { seenAt: -1, shotAt: -1, hpAtFireball: -1, arrived: [], ang: -1 }
+    const e = world.enemies[0]
+    for (let t = 0; t < 3000; t += DT) {
+        c.update(world, c.aiFrame(link, world, DT, box.read), DT)
+        if (out.arrived.length === 0 && link.exec.result === c.AI_OK) {
+            out.arrived = cell(world)
+            out.ang = world.ang
+        }
+        if (out.seenAt < 0 && c.canSee(world, world.x, world.y, e.x, e.y)) out.seenAt = t
+        if (out.shotAt < 0 && world.events.includes("shoot")) out.shotAt = t
+        if (out.hpAtFireball < 0 && world.events.includes("fireball")) out.hpAtFireball = e.dead ? 0 : e.hp
+    }
+    return { ...out, world, link }
+}
+
+test("ящик PEEK: вторая точка в байтах 26-27, клетка взгляда в 28-29; без второй точки — снова (a, b)", () => {
+    const box = encodeBox({ seq: 1, obs: 1, cmd: CMD.peek, a: 3, b: 1, conf: 50, latency: 400, label: "peek", route: [[4, 1]], look: [4, 5] })
+    assert.deepEqual([...box.slice(26, 30)], [5, 2, 5, 6])
+    const got = c.decodeAiBox((i: number) => box[i])
+    assert.deepEqual([got.cmd, ...got.route], [c.AI_PEEK, 4, 1, 4, 5])
+    const short = encodeBox({ seq: 1, obs: 1, cmd: CMD.peek, a: 3, b: 1, conf: 50, latency: 400, label: "peek", look: [4, 5] })
+    assert.deepEqual([...short.slice(26, 30)], [4, 2, 5, 6])
+})
+
+test("PEEK: идёт по двум точкам, клетку взгляда не проходит; без неё — обычный GOTO; ATTACK взгляд сбрасывает", () => {
+    const world = c.createWorld(CORNER, 0)
+    const exec = new c.AiExec()
+    c.aiStart(exec, world, c.AI_PEEK, 3, 1, [4, 1, 4, 5])
+    assert.deepEqual([exec.cmd, exec.result, exec.lookX, exec.lookY, ...exec.path], [c.AI_GOTO, c.AI_RUNNING, 4, 5, 1, 1, 3, 1, 4, 1])
+    c.aiStart(exec, world, c.AI_PEEK, 3, 1, [3, 1, 4, 5])
+    assert.deepEqual([...exec.path], [1, 1, 3, 1], "вторая точка совпала с первой — маршрут из одной")
+    c.aiStart(exec, world, c.AI_PEEK, 3, 1, [4, 1])
+    assert.deepEqual([exec.cmd, exec.lookX], [c.AI_GOTO, -1], "нет клетки взгляда — GOTO")
+    c.aiStart(exec, world, c.AI_PEEK, 3, 1, [4, 1, 4, 5])
+    c.aiStart(exec, world, c.AI_ATTACK, 0, 0)
+    assert.equal(exec.lookX, -1)
+})
+
+test("PEEK за угол: рефлекс стреляет в первом кадре, когда стрелок показался, и ранит его раньше его первого шара; GOTO — нет", () => {
+    const peeked = corner({ ...cmd("peek", 0, 3, 1, [[4, 1]]), look: [4, 5] })
+    assert.ok(peeked.seenAt >= 0, "стрелок показался")
+    assert.ok(peeked.shotAt >= 0 && peeked.shotAt - peeked.seenAt <= 2 * DT, `выстрел через ${peeked.shotAt - peeked.seenAt} мс после появления`)
+    assert.ok(peeked.hpAtFireball >= 0 && peeked.hpAtFireball < 3, `у стрелка ${peeked.hpAtFireball} HP к его первому шару`)
+    assert.deepEqual(peeked.arrived, [4, 1], "дошёл до угла")
+    assert.ok(Math.abs(peeked.ang - 256) <= 12, `у угла смотрит на юг, на клетку врага, угол ${peeked.ang}`)
+
+    const walked = corner(cmd("goto", 0, 3, 1, [[4, 1]]))
+    assert.ok(walked.seenAt >= 0)
+    assert.equal(walked.hpAtFireball, 3, "GOTO смотрит вдоль коридора: к первому шару стрелок цел")
+    assert.ok(walked.shotAt < 0 || walked.shotAt - walked.seenAt > 500, "GOTO сам не стреляет")
+})
+
+test("PEEK назад и вбок: к точке за спиной идёт задом, взгляд держит; на лаву не шагает", () => {
+    const room = c.createWorld(["#######", "#.....#", "#..S..#", "#.....#", "#######"], 0)
+    const link = linkFor(room)
+    const box = new Box()
+    c.aiSnapshot(link, room, c.DIFF_NORMAL)
+    box.send({ ...cmd("peek", link.obs, 1, 2), look: [5, 2] })
+    const run = play(link, room, box, 3000)
+    assert.equal(link.exec.result, c.AI_OK)
+    assert.deepEqual(cell(room), [1, 2])
+    assert.ok(Math.abs(((room.ang + 512) & 1023) - 512) <= 10, `смотрит на восток, угол ${room.ang}`)
+    assert.ok(run.ms < 1500, `${run.ms} мс на 2 клетки задом`)
+
+    const lava = c.createWorld(["#######", "#.....#", "#.LS..#", "#.....#", "#######"], 0)
+    const l2 = linkFor(lava)
+    const b2 = new Box()
+    c.aiSnapshot(l2, lava, c.DIFF_NORMAL)
+    b2.send({ ...cmd("peek", l2.obs, 3, 1, [[1, 1]]), look: [5, 3] })
+    const r2 = play(l2, lava, b2, 3000)
+    assert.equal(r2.lava, false)
+})
+
 test("меню: A на PLAYER переключает HUMAN и AI в обе стороны", () => {
     const menu = new c.Menu()
     const pad = new c.Pad()

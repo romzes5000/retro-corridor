@@ -39,6 +39,20 @@ test("стрелок подходит на 3–5 клеток, бросает ш
     assert.ok(gap(world) >= api.KEEP_NEAR - 200 && gap(world) <= api.KEEP_FAR + 200, `дистанция ${gap(world)}`)
 })
 
+test("стрелок, по которому выстрелили первым, всё равно целится SHOT_AIM_MS, а не бросает шар сразу", () => {
+    const world = createWorld(["###############", "#S.......F....#", "###############"], 0)
+    const shooter = world.enemies[0]
+    const shot = run(world, 3 * DT, (input, t) => {
+        input.fire = t === 0
+    })
+    assert.ok(shot.includes("hit"), "попал по спящему стрелку")
+    assert.equal(shooter.hp, 2)
+    assert.ok(shot.includes("alert"), "тревога поднята при первом взгляде")
+    const aiming = run(world, api.SHOT_AIM_MS - 100)
+    assert.equal([...shot, ...aiming].includes("fireball"), false, "шара нет, пока целится")
+    assert.ok(run(world, 300).includes("fireball"))
+})
+
 test("стрелок, к которому подошли вплотную, пятится", () => {
     const world = createWorld(["###############", "#....S.F......#", "###############"], 0)
     run(world, 100)

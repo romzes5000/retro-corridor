@@ -7,6 +7,8 @@ namespace corridor {
     export const AI_STRAFE = 3
     export const AI_USE = 4
     export const AI_WAIT = 5
+    // GOTO over (a, b) and the point in bytes 26-27 while facing the cell in bytes 28-29.
+    export const AI_PEEK = 6
 
     export const AI_RUNNING = 0
     export const AI_OK = 1
@@ -143,6 +145,9 @@ namespace corridor {
         lavaStop: boolean
         // GOTO route an ATTACK interrupted, picked up again once the target is dead.
         resume: number[]
+        // PEEK: the cell to face.
+        lookX: number
+        lookY: number
         constructor() {
             this.cmd = AI_NONE
             this.a = 0
@@ -164,6 +169,7 @@ namespace corridor {
             this.travel = 0
             this.lavaStop = false
             this.resume = []
+            this.lookX = -1
         }
     }
 
@@ -171,6 +177,16 @@ namespace corridor {
     // (the snapshot cell), so a player who walked on while Jev thought picks the route up mid-way.
     export function aiStart(exec: AiExec, world: World, cmd: number, a: number, b: number,
         route: number[] = null, fromX = -1, fromY = -1): void {
+        // A PEEK runs as a GOTO over its first two points that keeps facing the third (lookX >= 0).
+        exec.lookX = -1
+        if (cmd == AI_PEEK) {
+            cmd = AI_GOTO
+            if (route.length > 3) {
+                exec.lookX = route[2]
+                exec.lookY = route[3]
+                route = route.slice(0, 2)
+            }
+        }
         const interrupted = exec.cmd == AI_GOTO && exec.result == AI_RUNNING ? exec.path : exec.resume
         exec.resume = cmd == AI_GOTO ? [] : interrupted
         exec.cmd = cmd
@@ -420,6 +436,17 @@ namespace corridor {
         return input
     }
 
+    // PEEK: face the remembered enemy cell and reach the route point walking forward, back or
+    // sideways, each within 60 degrees of the way there (1024 angle units to a turn), so the
+    // reflex fires the moment the enemy shows.
+    function peek(exec: AiExec, world: World, input: Input, tx: number, ty: number): void {
+        steer(world, input, angleToward(world, exec.lookX * FP + 512, exec.lookY * FP + 512), AIM)
+        const rel = angleGap(world.ang, angleToward(world, tx, ty))
+        const a = Math.abs(rel)
+        input.fwd = a < 171 ? 1 : a > 341 ? -1 : 0
+        if (a > 85 && a < 427) input.strafe = rel > 0 ? 1 : -1
+    }
+
     function runCommand(exec: AiExec, world: World, dt: number, input: Input): void {
         exec.elapsed += dt
         if (world.health < exec.startHp) exec.hurt = true
@@ -442,6 +469,10 @@ namespace corridor {
             }
             if (exec.elapsed >= exec.limit || (exec.elapsed > AI_STUCK_MS && exec.still >= AI_STUCK_MS)) {
                 finish(exec, AI_BLOCKED)
+                return
+            }
+            if (exec.lookX >= 0) {
+                peek(exec, world, input, tx, ty)
                 return
             }
             const gap = Math.abs(steer(world, input, angleToward(world, tx, ty), AIM))

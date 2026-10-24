@@ -2,7 +2,7 @@
 export const SIG = "CRDRAI01"
 export const BOX_SIZE = 32
 
-export const CMD = { none: 0, goto: 1, attack: 2, strafe: 3, use: 4, wait: 5 } as const
+export const CMD = { none: 0, goto: 1, attack: 2, strafe: 3, use: 4, wait: 5, peek: 6 } as const
 export type CmdName = keyof typeof CMD
 
 export interface BoxCommand {
@@ -16,8 +16,16 @@ export interface BoxCommand {
     label: string
     // GOTO points after (a, b), at most 2; bytes 26-29 hold x+1, y+1 and 0 means none.
     route?: Array<[number, number]>
+    // PEEK: the cell to face, in bytes 28-29; the route keeps one point, (a, b) again when it has none.
+    look?: [number, number]
     // Jev's danger estimate 0..1, byte 30 as 0..100; 0xff when Jev gave none.
     danger?: number | null
+}
+
+// Route bytes of a command: a PEEK carries its second point and the cell to face.
+export function boxRoute(c: Pick<BoxCommand, "a" | "b" | "route" | "look">): Array<[number, number]> {
+    if (!c.look) return (c.route ?? []).slice(0, 2)
+    return [c.route?.[0] ?? [c.a, c.b], c.look]
 }
 
 export const ROUTE_AT = 26
@@ -55,7 +63,7 @@ export function encodeBox(c: BoxCommand): Uint8Array {
     box[17] = latency >> 8
     const label = boxLabel(c.label)
     for (let i = 0; i < label.length; i++) box[18 + i] = label.charCodeAt(i)
-    ;(c.route ?? []).slice(0, 2).forEach(([x, y], i) => {
+    boxRoute(c).forEach(([x, y], i) => {
         box[ROUTE_AT + i * 2] = clamp(x + 1, 0, 255)
         box[ROUTE_AT + i * 2 + 1] = clamp(y + 1, 0, 255)
     })

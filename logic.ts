@@ -675,12 +675,13 @@ namespace corridor {
         return targetAt(world, VIEW_W >> 1)
     }
 
+    // A hit does not wake the enemy: it raises the alarm on its own next look, so a shooter hit
+    // first still spends SHOT_AIM_MS aiming.
     export function damageEnemy(world: World, i: number, damage: number): void {
         const enemy = world.enemies[i]
         if (enemy.dead) return
         enemy.hp -= damage
         enemy.hurt = IMP_HURT_MS
-        enemy.awake = true
         addDecal(world, enemy.x + world.rng.next(301) - 150, enemy.y + world.rng.next(301) - 150, DECAL_BLOOD)
         if (enemy.hp > 0) {
             emitAt(world, "hit", enemy.x, enemy.y)
