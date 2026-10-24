@@ -268,3 +268,35 @@ test("дробовик в руках рисуется шире пистолет�
     const shotgun = span(frame(world))
     assert.ok(shotgun > pistol + 8, `пистолет ${pistol}, дробовик ${shotgun}`)
 })
+
+test("смерть в четыре кадра: оседает и остаётся трупом", () => {
+    const world = c.createWorld(["#######", "#S..E.#", "#######"], 0)
+    const enemy = world.enemies[0]
+    enemy.dead = true
+    const shots = [0, 1, 2, 3, 10].map((k) => {
+        enemy.deadMs = k * c.DIE_FRAME_MS
+        return frame(world, (v) => { v.mode = r.MODE_TITLE + 99 }).pixels.join(",")
+    })
+    assert.equal(new Set(shots.slice(0, 4)).size, 4, "четыре разных кадра")
+    assert.equal(shots[3], shots[4], "после анимации — неподвижный труп")
+})
+
+test("след крови виден на полу перед игроком", () => {
+    const world = c.createWorld(["#######", "#S....#", "#######"], 0)
+    const base = frame(world, (v) => { v.mode = r.MODE_TITLE + 99 })
+    c.addDecal(world, 3 * 1024, 1024 + 512, c.DECAL_BLOOD)
+    const img = frame(world, (v) => { v.mode = r.MODE_TITLE + 99 })
+    const box = spriteBox(img, base)
+    assert.ok(box.colours.has(2) || box.colours.has(3), `цвета ${[...box.colours]}`)
+    assert.ok(box.top > 50, `след на полу, верх ${box.top}`)
+})
+
+test("пауза рисует своё меню поверх игры", () => {
+    const world = c.createWorld(c.CAMPAIGN, 0)
+    const play = frame(world)
+    const paused = frame(world, (v) => { v.pause = new c.Pause(true, c.DIFF_NORMAL) })
+    const moved = frame(world, (v) => { v.pause = new c.Pause(true, c.DIFF_NORMAL); v.pause.index = 3 })
+    assert.notDeepEqual(paused.pixels, play.pixels)
+    assert.notDeepEqual(paused.pixels, moved.pixels, "курсор паузы рисуется")
+    assert.equal(paused.getPixel(13, 50), 6)
+})

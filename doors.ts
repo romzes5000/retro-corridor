@@ -79,7 +79,7 @@ namespace corridor {
     export function openDoor(world: World, door: Door): void {
         if (door.state == DOOR_OPENING || door.state == DOOR_OPEN) return
         door.state = DOOR_OPENING
-        emit(world, "door")
+        emitAt(world, "door", door.cx * FP + (FP >> 1), door.cy * FP + (FP >> 1))
     }
 
     // Enemies open plain doors they walk into; keyed doors stay shut for them.
@@ -133,7 +133,7 @@ namespace corridor {
                         door.hold = 500
                     } else {
                         door.state = DOOR_CLOSING
-                        emit(world, "door")
+                        emitAt(world, "door", door.cx * FP + (FP >> 1), door.cy * FP + (FP >> 1))
                     }
                 }
             } else if (door.state == DOOR_CLOSING) {
