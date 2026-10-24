@@ -70,26 +70,95 @@ do next. The game never waits for it: it keeps running at full speed and execute
    fireballs, doors, picked-up items (`AI S ...` to `AI END`). The map never goes over the wire.
 2. The bridge rebuilds the same level from the game code (`load-logic.ts`) and checks the console's
    map hash, then works out the route (key, its door, the exit, or the boss while the exit is locked).
-3. It describes the situation in plain English (goal, visible enemies, the safe side of an incoming
-   fireball, medkit and ammo distance, the outcome of the last commands) and asks
-   Jev (TypeSafe System One, `/api/v1/systemone` on OpenRouter) to pick one tactic: advance, attack,
-   dodge left or right, retreat, heal, ammo, open, wait.
-4. The tactic becomes one short command (go to a cell up to 2 tiles away in a straight line, attack
-   enemy N, strafe, use, wait), written straight into a 32-byte mailbox in the console's RAM.
-   Commands answering a snapshot older than 1.2 s of game time are dropped.
+3. It describes the situation in plain English and asks Jev (TypeSafe System One,
+   `/api/v1/systemone` on OpenRouter) to pick one tactic: advance, attack, dodge left or right,
+   retreat, heal, ammo, weapon (go for the shotgun), open, wait. The facts: goal, health state,
+   weapon, enemies in sight (and whether they can bite), enemies seen in the last 5 s, the safe side
+   of an incoming fireball, medkit, ammo and shotgun with the detour each costs, nearby lava, the
+   outcome of the last commands. Only what the player can see counts: no enemies through walls; a
+   boss out of sight is looked for where it was last seen, then where it appears. The facts
+   describe the moment the answer will land: the bridge runs its copy of the world forward by the
+   usual Jev latency under the command already playing.
+4. The tactic becomes one short command (walk a route of up to 3 straight legs, attack enemy N,
+   backpedal from it while shooting, strafe, use, wait), written straight into a 32-byte mailbox in
+   the console's RAM. Commands answering a snapshot older than 1.2 s of game time are dropped.
 
-The screen shows `JEV ATTACK 84% 230MS` (tactic, confidence, model latency), or `NO LINK` after 3 s
-without commands. AI runs never set records; after a death the level restarts by itself, after a win
-the next one starts. Hold B for the pause menu, `QUIT` returns control to you.
+The console follows the route from the cell the bridge planned from, turns into the next leg before
+reaching the corner, and on its own shoots whatever is under the crosshair and sidesteps a fireball
+landing within 300 ms. It never steps into lava. If the player stands still out of combat for 6 s,
+the bridge overrides Jev's pick with advance once.
+
+The screen shows `JEV ATTACK 84% 230MS` (tactic, confidence, model latency), red when Jev says
+danger is high, or `NO LINK - RUN NPM RUN AI` after 3 s without commands. A on `PLAYER` in the
+title menu toggles between you and AI. AI runs never set records; after a death the level restarts
+by itself, after a win the next one starts. Hold B for the pause menu, `QUIT` returns control to you.
 
 ```bash
 export OPENROUTER_KEY=...            # an OpenRouter API key; never commit it
 npm run ai -- --check                # console only: finds the mailbox, listens for 3 s
 npm run ai                           # play on the console (pick PLAYER AI, start a level)
 npm run ai -- --sim HANGAR --runs 5  # same protocol against the game running in Node
-npm run ai -- --sim HANGAR --fake --fast   # rule-based picks, no key, virtual time
+npm run ai -- --sim ALL --runs 5 --quiet   # bench: every campaign level, wins, idle time, damage
+npm run ai -- --sim HANGAR --fake --fast --lag 500   # rule-based picks, no key, virtual time
+npm run ai -- --sim ARENA --runs 10 --attempts 4 --quiet --lessons   # deaths before the win
+npm run ai -- --sim D1-D5 --difficulty easy   # endless depths 1 to 5
+npm run ai:eval                      # 10 fixed situations x 5 Jev calls, hit rate per situation
 npm run ai:probe                     # latency and cost of 30 Jev calls
+npm run ai:probe -- --variants       # latency of action only / action + danger / trimmed state
 ```
+
+`--no-reflexes` turns off the console reflexes and `--no-predict` the forward run of the facts, to
+measure what each adds.
+
+To film AI play on the console, add `--film`: the bridge writes every snapshot and decision to
+`bridge/out/film-*.jsonl`, and `npm run ai:film -- bridge/out/film-X.jsonl` renders it with the
+game's own renderer into an MP4 (640x480, needs ffmpeg) or, with `--out clip.gif`, a GIF;
+`--speed 2` plays it twice as fast. This is a reconstruction from 4 snapshots per second: motion in
+between is interpolated, and shots, hits, kills and pickups are inferred from what changed.
+
+### Lessons after a death
+
+Jev answers one situation at a time and remembers nothing, so after a death the bridge writes down
+what went wrong. It keeps the last 15 s of damage, heals and its own picks, takes the streak of hits
+that ended in the death (back to the last heal or a 3 s pause), and sends it to a second model
+(`openai/gpt-4.1-mini` on OpenRouter, a strict JSON schema). The answer is a lesson: conditions from
+a fixed list (a biter in reach, a shooter or the boss in sight, a fireball close, health below 60 or
+40), one action (attack, retreat, dodge, heal, weapon, ammo) and either a zone of the map or none.
+A zone lesson holds on that map only, up to 3 per level; a global one holds everywhere, endless
+depths included, up to 3 in total. If the model is down or answers nonsense, a rule writes the lesson
+from the cause of death; lava deaths teach nothing, the console already refuses to step into lava.
+
+When a lesson's conditions hold and its action makes sense right now (a medkit to go to, a fireball
+to dodge, an enemy to fight), the state gets a `lesson` field and Jev's criterion for that action
+gets "this is what lesson says to do". If Jev still picks a calm move (advance, wait, open, ammo,
+weapon), the lesson's action replaces it and the label gets a `!`: `HEAL!`. The stall watchdog and
+the forced heal below 40 HP come first. A lesson that was in force when the same death repeats
+counts as failed and is dropped after two failures; one in force on a won attempt counts a win, and
+the weakest lesson goes when a group is full.
+
+Lessons are off by default; `--lessons` turns them on. They live in
+`bridge/out/lessons-console.json` and `lessons-sim.json` and survive restarts; `--lessons-file FILE`
+picks another file and `--lessons-reset` starts from empty (either one implies `--lessons`).
+`--attempts N` lets a simulated run retry after a death up to N attempts and reports the deaths
+before the first win. `LESSON_MODEL` overrides the reflecting model.
+
+They do not pay off yet. Ten simulated runs per level on normal, up to 4 attempts each, lessons
+starting from an empty file:
+
+| Level | Lessons | Won within 4 attempts | Deaths before the win |
+|---|---|---|---|
+| ARENA | on | 4/10 | 30 |
+| ARENA | off | 3/10 | 34 |
+| WAREHOUSE | on | 10/10 | 0 |
+| WAREHOUSE | off | 9/10 | 5 |
+
+The ARENA gap is within run-to-run noise, and on WAREHOUSE the lessons run never died, so no
+lesson was ever in force there. A lesson was in force for 175 ARENA decisions, yet it never had to
+replace Jev's pick: in those moments Jev already fought or dodged. The model wrote 30 lessons, one per
+death, and most were tied to a small zone and to health under 40, so a new attempt rarely met the same
+conditions again. Endless depths 1 to 5 on easy, two passes, were won on the first attempt with or without
+lessons, except one death on D5 in the first pass of each, so the global lessons had nothing to show
+there.
 
 `JEV_MODEL` overrides the model (default `~typesafe/jev-latest`). Every decision goes to
 `bridge/out/run-*.jsonl` with the facts, the answer, the latency and the cost.
@@ -109,9 +178,9 @@ of play. The GIF above is one of those runs replayed from `demo/ai-hangar.json` 
 | `render.ts`, `art.ts` | Renderer; walls, weapons, items and font drawn in code |
 | `art-enemies.ts` | Enemy and fireball frames, generated from `art-src/demons.png` |
 | `tools/` | Sprite sheet importer |
-| `ai.ts` | AI link on the console: snapshots, mailbox, command executor, status line |
+| `ai.ts` | AI link on the console: snapshots, mailbox, route follower, reflexes, status line |
 | `main.ts` | Device glue: loop, sound, music, settings, AI mailbox |
-| `bridge/` | AI bridge on the computer: HF2 transport, shadow world, route, facts, Jev, simulator |
+| `bridge/` | AI bridge on the computer: HF2 transport, shadow world, route, memory of what was seen, facts, Jev, simulator, eval situations |
 | `demo/` | Pilot bot, GIF recorder, legacy renderer for the before/after clip |
 
 ## Art

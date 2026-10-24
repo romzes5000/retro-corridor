@@ -32,6 +32,16 @@ export const ACTION_QUESTIONS = {
 // Request without the danger question, for latency comparison in `probe --variants`.
 export const ACTION_ONLY = { action: ACTION_QUESTIONS.action } as const
 
+export const LESSON_CRITERION = "; this is what lesson says to do"
+
+// With a lesson in force its action's criterion points at the `lesson` field: a criterion that
+// names a state field is what moved Jev for the shotgun, the field alone did not.
+export function questionsFor(lesson: Action | null): typeof ACTION_QUESTIONS {
+    if (!lesson) return ACTION_QUESTIONS
+    const criteria = { ...CRITERIA, [lesson]: CRITERIA[lesson] + LESSON_CRITERION }
+    return { ...ACTION_QUESTIONS, action: { ...ACTION_QUESTIONS.action, criteria } } as unknown as typeof ACTION_QUESTIONS
+}
+
 export function jevModel(): string {
     return process.env.JEV_MODEL || DEFAULT_MODEL
 }
@@ -46,7 +56,12 @@ export interface JevAnswer {
     error: string
 }
 
-export type JevFn = (state: Record<string, unknown>) => Promise<JevAnswer>
+export interface JevHint {
+    // Action of the lesson in force, if any.
+    lesson?: Action | null
+}
+
+export type JevFn = (state: Record<string, unknown>, hint?: JevHint) => Promise<JevAnswer>
 
 function isAction(v: unknown): v is Action {
     return typeof v === "string" && (ACTIONS as readonly string[]).includes(v)
@@ -85,7 +100,7 @@ export function makeJev(opts: JevOptions): JevFn {
     const now = opts.now ?? Date.now
     const model = opts.model ?? jevModel()
     const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS
-    return async (state) => {
+    return async (state, hint) => {
         const started = now()
         const abort = new AbortController()
         const timer = setTimeout(() => abort.abort(), timeoutMs)
@@ -93,7 +108,7 @@ export function makeJev(opts: JevOptions): JevFn {
             const res = await doFetch(JEV_URL, {
                 method: "POST",
                 headers: { Authorization: `Bearer ${opts.key}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ model, state, questions: ACTION_QUESTIONS }),
+                body: JSON.stringify({ model, state, questions: questionsFor(hint?.lesson ?? null) }),
                 signal: abort.signal,
             })
             const body = await res.json()

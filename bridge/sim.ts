@@ -1,6 +1,7 @@
 // In-process stand-in for the console: runs the real game logic frame by frame the way main.ts
 // does in AI mode, prints the same AI lines and reads commands from a byte-array mailbox.
 import { loadGame, type Game, type LogicApi, type World } from "../load-logic.ts"
+import { damageSource } from "./damage.ts"
 import type { Transport } from "./loop.ts"
 import { BOX_SIZE, encodeBox, type BoxWrite } from "./mailbox.ts"
 
@@ -16,6 +17,25 @@ export function levelIndex(api: LogicApi, name: string): number {
     const i = (api.LEVELS as Array<{ name: string }>).findIndex((l) => l.name.toUpperCase() === name.toUpperCase())
     if (i < 0) throw new Error(`no level ${name}; levels: ${api.LEVELS.map((l: { name: string }) => l.name).join(", ")}`)
     return i
+}
+
+export interface SimLevel {
+    // Campaign index, or endless depth minus one.
+    index: number
+    endless: boolean
+    name: string
+}
+
+// "ALL", a campaign level name or index, or endless depths "D3" / "D1-D5".
+export function simLevels(api: LogicApi, spec: string): SimLevel[] {
+    const campaign = (i: number): SimLevel => ({ index: i, endless: false, name: api.LEVELS[i].name })
+    if (spec.toUpperCase() === "ALL") return api.LEVELS.map((_: unknown, i: number) => campaign(i))
+    const depth = spec.toUpperCase().match(/^D(\d+)(?:-D?(\d+))?$/)
+    if (!depth) return [campaign(levelIndex(api, spec))]
+    const from = Number(depth[1])
+    const to = Number(depth[2] ?? depth[1])
+    if (from < 1 || to < from) throw new Error(`no depths ${spec}; use D1 or D1-D5`)
+    return Array.from({ length: to - from + 1 }, (_, k) => ({ index: from + k - 1, endless: true, name: `D${from + k}` }))
 }
 
 export class SimConsole implements Transport {
@@ -141,9 +161,7 @@ export class SimConsole implements Transport {
         }
         const lost = before.hp - world.health
         if (lost <= 0) return
-        if (world.shots.length < before.shots && world.events.includes("hurt")) this.damage.shot += lost
-        else if (api.lavaAt(world, world.x >> 10, world.y >> 10)) this.damage.lava += lost
-        else this.damage.bite += lost
+        this.damage[damageSource(api, world, world.x, world.y, world.shots.length < before.shots && world.events.includes("hurt"))] += lost
     }
 }
 

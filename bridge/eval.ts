@@ -6,7 +6,7 @@ import { loadLogic, type LogicApi } from "../load-logic.ts"
 import { fakeJev } from "./fake-jev.ts"
 import { jevModel, makeJev, type JevFn } from "./jev.ts"
 import { percentile } from "./loop.ts"
-import { judge, SCENARIOS, scenarioState, type Scenario } from "./scenarios.ts"
+import { judge, SCENARIOS, scenarioLesson, scenarioState, type Scenario } from "./scenarios.ts"
 
 export interface ScenarioScore {
     name: string
@@ -26,9 +26,10 @@ export async function evaluate(api: LogicApi, jev: JevFn, runs: number, scenario
     const report: EvalReport = { scores: [], latencies: [], cost: 0, errors: 0 }
     for (const sc of scenarios) {
         const state = scenarioState(api, sc)
+        const lesson = scenarioLesson(api, sc)
         const score: ScenarioScore = { name: sc.name, hits: 0, runs, picks: {} }
         for (let i = 0; i < runs; i++) {
-            const answer = await jev(state)
+            const answer = await jev(state, lesson ? { lesson: lesson.action } : undefined)
             if (answer.error) report.errors++
             report.latencies.push(answer.latencyMs)
             report.cost += answer.cost

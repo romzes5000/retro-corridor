@@ -1,8 +1,9 @@
 // Latency and format probe for Jev over OpenRouter:
 //   npm run ai:probe [calls]                  one request shape, picks and cost
 //   npm run ai:probe -- --variants [calls]    action only / action + danger / trimmed state, side by side
+//   npm run ai:probe -- --lessons [calls]     death lesson: field position, with and without criterion
 // Needs OPENROUTER_KEY in the environment; the key is never printed.
-import { ACTION_ONLY, ACTION_QUESTIONS, JEV_URL, jevModel } from "./jev.ts"
+import { ACTION_ONLY, ACTION_QUESTIONS, JEV_URL, jevModel, questionsFor } from "./jev.ts"
 
 export const STATE: Record<string, unknown> = {
     goal: "pick up the red key, 6 steps away",
@@ -39,6 +40,44 @@ export const VARIANTS: Variant[] = [
     { name: "action only", questions: ACTION_ONLY, state: STATE },
     { name: "action + danger", questions: ACTION_QUESTIONS, state: STATE },
     { name: "trimmed state", questions: ACTION_QUESTIONS, state: trimmed(STATE) },
+]
+
+// A knight closing in at half health where the player died before; without the lesson Jev walks on.
+const LESSON_BASE: Record<string, unknown> = {
+    goal: "reach the exit, 9 steps away",
+    route: "next waypoint is ahead",
+    progress: "closer to the goal (10 -> 9 steps)",
+    health: 50,
+    health_state: "hurt",
+    ammo: 14,
+    weapon: "pistol, 1 damage per shot",
+    enemies: [{ kind: "knight", distance: 2.6, direction: "ahead", in_crosshair: false, in_bite_range: false, hp: 6, sees_you: true }],
+    last_seen: [],
+    fireballs: [],
+    door_ahead: "none",
+    medkit: null,
+    ammo_pickup: null,
+    shotgun: null,
+    lava: null,
+    recent: ["advance ok", "advance ok", "advance in progress"],
+}
+export const LESSON_TEXT = "died here before: biter_near + health_below_60, retreat"
+
+function lessonState(at: "none" | "last" | "before_weapon_state"): Record<string, unknown> {
+    const state: Record<string, unknown> = { ...LESSON_BASE }
+    if (at === "before_weapon_state") state.lesson = LESSON_TEXT
+    state.weapon_state = "weak"
+    if (at === "last") state.lesson = LESSON_TEXT
+    return state
+}
+
+// `--lessons`: where the lesson field goes and whether its action's criterion points at it.
+export const LESSON_VARIANTS: Variant[] = [
+    { name: "no lesson", questions: ACTION_QUESTIONS, state: lessonState("none") },
+    { name: "lesson last", questions: ACTION_QUESTIONS, state: lessonState("last") },
+    { name: "lesson before weapon_state", questions: ACTION_QUESTIONS, state: lessonState("before_weapon_state") },
+    { name: "lesson last + criterion", questions: questionsFor("retreat"), state: lessonState("last") },
+    { name: "lesson before weapon_state + criterion", questions: questionsFor("retreat"), state: lessonState("before_weapon_state") },
 ]
 
 export interface VariantResult {
@@ -118,16 +157,18 @@ async function main(): Promise<void> {
     const key = process.env.OPENROUTER_KEY
     if (!key) throw new Error("OPENROUTER_KEY is not set")
     const args = process.argv.slice(2)
-    const variants = args.includes("--variants")
+    const lessons = args.includes("--lessons")
+    const variants = args.includes("--variants") || lessons
     const calls = Number(args.find((a) => /^\d+$/.test(a)) ?? (variants ? 20 : 30))
     if (!variants) return legacy(key, calls)
+    const set = lessons ? LESSON_VARIANTS : VARIANTS
     const results: VariantResult[] = []
     // Interleaved so a slow minute on the provider side hits every variant alike.
-    const per = VARIANTS.map((): VariantResult[] => [])
+    const per = set.map((): VariantResult[] => [])
     for (let i = 0; i < calls; i++) {
-        for (let k = 0; k < VARIANTS.length; k++) per[k].push(await probeVariant(VARIANTS[k], 1, { key }))
+        for (let k = 0; k < set.length; k++) per[k].push(await probeVariant(set[k], 1, { key }))
     }
-    VARIANTS.forEach((v, k) => {
+    set.forEach((v, k) => {
         const all = per[k]
         const merged: VariantResult = { name: v.name, latencies: all.flatMap((r) => r.latencies), errors: 0, cost: 0, picks: {}, timings: all.at(-1)?.timings ?? {} }
         for (const r of all) {

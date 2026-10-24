@@ -1,6 +1,6 @@
 // Offline stand-in for Jev: reads the same facts and picks with a few fixed rules. Used by tests
 // and by `npm run ai -- --sim LEVEL --fake` to check the link without an API key.
-import type { Action, JevAnswer } from "./jev.ts"
+import { ACTIONS, type Action, type JevAnswer } from "./jev.ts"
 
 interface Pickup {
     steps: number
@@ -26,6 +26,9 @@ export function fakePick(state: Record<string, unknown>): Action {
     const f = state as unknown as Facts
     const ball = f.fireballs.find((b) => b.hits_in_ms < 700 && b.safe_side !== "none")
     if (ball) return ball.safe_side === "left" ? "dodge_left" : "dodge_right"
+    // Real Jev follows a lesson whose criterion points at it (12 of 12 in probe --lessons).
+    const taught = typeof state.lesson === "string" ? state.lesson.split(", ").at(-1) : undefined
+    if (taught && (ACTIONS as readonly string[]).includes(taught)) return taught as Action
     const biting = f.enemies.find((e) => e.in_bite_range)
     if (biting && f.health < 40 && f.ammo > 0) return "retreat"
     if (f.health_state !== "ok" && f.medkit && f.medkit.detour_steps <= MEDKIT_DETOUR) return "heal"

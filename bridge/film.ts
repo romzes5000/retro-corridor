@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url"
 import { FakeImage } from "../fake-image.ts"
 import { loadGame, type Game, type LogicApi, type World } from "../load-logic.ts"
 import { Frame, encodeGif, paste, rgbList } from "../demo/frames.ts"
+import { inBiteReach } from "./damage.ts"
 import type { LogRecord } from "./loop.ts"
 import { Parser, type Snapshot } from "./protocol.ts"
 import { Shadow } from "./shadow.ts"
@@ -178,9 +179,7 @@ export class FilmPlayer {
         if (next.ammo < prev.ammo) events.push(next.weapon === api.WEAPON_SHOTGUN ? "blast" : "shoot")
         if (next.hp < prev.hp) {
             events.push("hurt")
-            for (const e of next.enemies) {
-                if (api.ENEMY_BITE[e.kind] > 0 && api.distance(next.x, next.y, e.x, e.y) <= api.IMP_REACH + api.ENEMY_RADIUS[e.kind]) world.enemies[e.i].attack = ATTACK_MS
-            }
+            for (const e of next.enemies) if (inBiteReach(api, next.x, next.y, e)) world.enemies[e.i].attack = ATTACK_MS
         }
         if (next.hp > prev.hp) events.push("pickup")
         for (const e of prev.enemies) {

@@ -48,6 +48,18 @@ export function mustHeal(world: World, sit: Situation, pick: Action): boolean {
     return pick === "retreat" && sit.enemies.length === 0 && sit.fireballs.length === 0
 }
 
+// A death lesson in force replaces a calm pick the same way; fighting and dodging stay Jev's, and
+// a watchdog kick wins, or the lesson would undo the advance that unsticks the player.
+export function applyLesson(lesson: Action | null, pick: Action, watchdog: boolean): Action {
+    if (!lesson || watchdog || pick === lesson || !CALM.includes(pick)) return pick
+    return lesson
+}
+
+// Marks a decision the bridge overrode with a lesson; the console font has no `*`.
+export function lessonLabel(label: string): string {
+    return `${label.slice(0, 7)}!`
+}
+
 function make(action: Action, cmd: number, a = 0, b = 0, route: Cell[] = []): Decision {
     return { action, cmd, a, b, label: LABELS[action], route }
 }

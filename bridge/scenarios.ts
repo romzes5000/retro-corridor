@@ -2,6 +2,7 @@
 // right. Used offline by the tests (fake picks) and against the real model by `npm run ai:eval`.
 import type { LogicApi, World } from "../load-logic.ts"
 import type { Action } from "./jev.ts"
+import { activeLesson, lessonText, type ActiveLesson, type Lesson } from "./lessons.ts"
 import { facts, situate } from "./observe.ts"
 
 export interface Scenario {
@@ -9,6 +10,8 @@ export interface Scenario {
     map: string[]
     ang: number
     setup?: (api: LogicApi, world: World) => void
+    // A death lesson kept from before; in force when its conditions hold here.
+    lesson?: Lesson
     // A pick is right when it is in `allowed` (if given) and not in `forbidden`.
     allowed?: Action[]
     forbidden?: Action[]
@@ -82,6 +85,22 @@ export const SCENARIOS: Scenario[] = [
         ang: EAST,
         forbidden: ["attack", "retreat", "dodge_left", "dodge_right"],
     },
+    {
+        // Without the lesson Jev shoots it out with the knight (0 of 12 retreats in probe --lessons).
+        name: "knight closing in at half health, lesson says retreat",
+        map: ["############", "#S........X#", "############"],
+        ang: EAST,
+        setup: (api, w) => {
+            w.health = 50
+            w.enemies.push(new api.Enemy(api.ENEMY_KNIGHT, w.x + 2600, w.y))
+            Object.assign(w.enemies[0], { awake: true, sees: true, hunting: true })
+        },
+        lesson: {
+            id: "E1", key: "global", scope: "global", zone: null, when: ["biter_near", "health_below_60"], do: "retreat",
+            why: "knight bit to death from 50 HP", deaths: 1, wins: 0, failed: 0, at: 0, source: "rule",
+        },
+        allowed: ["retreat"],
+    },
 ]
 
 export function scenarioWorld(api: LogicApi, sc: Scenario): World {
@@ -90,10 +109,17 @@ export function scenarioWorld(api: LogicApi, sc: Scenario): World {
     return world
 }
 
+export function scenarioLesson(api: LogicApi, sc: Scenario): ActiveLesson | null {
+    if (!sc.lesson) return null
+    const world = scenarioWorld(api, sc)
+    return activeLesson(api, world, situate(api, world), [sc.lesson], "eval")
+}
+
 // The facts Jev gets for the scenario, the same way the bridge builds them.
 export function scenarioState(api: LogicApi, sc: Scenario): Record<string, unknown> {
     const world = scenarioWorld(api, sc)
-    return facts(api, world, situate(api, world), [])
+    const lesson = scenarioLesson(api, sc)
+    return facts(api, world, situate(api, world), [], "new goal", { lesson: lesson ? lessonText(lesson) : undefined })
 }
 
 export function judge(sc: Scenario, pick: string): boolean {

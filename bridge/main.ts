@@ -1,12 +1,18 @@
 // AI player bridge. Console over USB:   npm run ai
 // Simulated console, same protocol:     npm run ai -- --sim HANGAR [--difficulty normal] [--runs 5]
 // Bench over every campaign level:      npm run ai -- --sim ALL --runs 5 --quiet
+// Endless depths:                        npm run ai -- --sim D1-D5 --difficulty easy
 // Extra flags: --fake (rule-based picks, no API key), --fast (virtual time, only with --fake),
 // --lag 500 (with --fast: fake answers land 500 ms of sim time later), --no-reflexes, --no-predict,
 // --record demo/ai-hangar.json (inputs of the first won run, for the GIF replay),
 // --check (console only: find the mailbox, listen to the console for 3 s, no Jev),
 // --film (snapshots and decisions to bridge/out/film-*.jsonl; npm run ai:film renders a video).
-// Jev needs OPENROUTER_KEY in the environment; JEV_MODEL overrides the model.
+// Death lessons are off by default (the bench showed no gain): --lessons turns them on, kept in
+// bridge/out/lessons-console.json or lessons-sim.json; --lessons-file FILE, --lessons-reset (start
+// empty; both imply --lessons); --attempts 10 (sim: retry a level after a death until it is won,
+// up to 10 attempts, the way the console does).
+// Jev needs OPENROUTER_KEY in the environment; JEV_MODEL overrides the model, LESSON_MODEL the
+// model that writes lessons.
 import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
@@ -15,9 +21,10 @@ import { fakeJev } from "./fake-jev.ts"
 import { FilmRecorder } from "./film.ts"
 import { Hf2Transport } from "./hf2.ts"
 import { jevModel, makeJev, type JevFn } from "./jev.ts"
-import { addStats, Bridge, emptyStats, percentile, type LogRecord, type Stats } from "./loop.ts"
+import { LessonStore, lessonsFile, lessonsOn, makeReflect, type Lesson, type LessonFlags, type ReflectFn } from "./lessons.ts"
+import { addStats, Bridge, emptyStats, percentile, type BridgeOptions, type LogRecord, type Stats } from "./loop.ts"
 import { isBox } from "./mailbox.ts"
-import { levelIndex, recording, SIM_DT, SimConsole } from "./sim.ts"
+import { recording, SIM_DT, SimConsole, simLevels, type SimLevel } from "./sim.ts"
 
 const DIFFICULTIES = ["easy", "normal", "hard"]
 const OUT_DIR = new URL("./out/", import.meta.url)
@@ -44,6 +51,28 @@ function pickJev(fake: boolean): JevFn {
     return makeJev({ key })
 }
 
+// The store for this mode (console and sim keep separate files) and who writes the lessons:
+// the LLM with a key, the rule alone with --fake.
+function openLessons(flags: LessonFlags, mode: "console" | "sim", fake: boolean): BridgeOptions["lessons"] {
+    if (!lessonsOn(flags)) return null
+    const file = flags.file ?? lessonsFile(OUT_DIR.pathname, mode)
+    const store = new LessonStore(file)
+    if (flags.reset) {
+        store.clear()
+        store.save()
+    }
+    const key = process.env.OPENROUTER_KEY
+    const reflect: ReflectFn | null = fake || !key ? null : makeReflect({ key })
+    const shown = path.relative(process.cwd(), file)
+    console.log(`lessons ${shown.startsWith("..") ? file : shown}: ${store.lessons.length} kept, written by ${reflect ? "LLM, rule as fallback" : "rule"}`)
+    return { store, reflect }
+}
+
+function lessonLine(l: Lesson): string {
+    const where = l.zone ? `zone ${l.zone.x},${l.zone.y} r${l.zone.r}` : "global"
+    return `${l.id} ${where}: ${l.when.join(" + ")} -> ${l.do} (${l.why}) [${l.source}, deaths ${l.deaths} wins ${l.wins} failed ${l.failed}]`
+}
+
 function summary(stats: Stats, seconds: number): string {
     const rate = seconds > 0 ? (stats.decisions / seconds).toFixed(2) : "0"
     return [
@@ -58,9 +87,19 @@ function printDecision(rec: LogRecord): void {
     if (rec.kind === "decision" && rec.decision && rec.answer) {
         const err = rec.answer.error ? ` (${rec.answer.error})` : ""
         console.log(`#${rec.n} ${rec.answer.action} -> ${rec.decision.label} ${Math.round(rec.answer.confidence * 100)}% ${rec.answer.latencyMs} ms${err}`)
+    } else if (rec.kind === "lesson") {
+        printLesson(rec)
     } else if (rec.kind !== "decision") {
         console.log(`${rec.kind}${rec.reason ? ": " + rec.reason : ""}`)
     }
+}
+
+function printLesson(rec: LogRecord): void {
+    const l = rec.learned
+    if (!l) return
+    const failed = l.failed.length ? `, failed ${l.failed.join(" ")}` : ""
+    const note = l.note ? ` (LLM not used: ${l.note})` : ""
+    console.log(l.lesson ? `lesson ${l.verdict} by ${l.source}: ${lessonLine(l.lesson)}${failed}${note}` : `lesson: none${failed}${note}`)
 }
 
 interface SimOpts {
@@ -77,12 +116,15 @@ interface SimOpts {
     record?: string
     film: FilmRecorder | null
     quiet: boolean
+    // Above 1: retry after a death until the level is won, at most this many attempts.
+    attempts: number
+    lessons: BridgeOptions["lessons"]
 }
 
 // Answers in sim time: the request resolves once the sim clock has moved `lag` ms on.
 function lagged(jev: JevFn, sim: SimConsole, lag: number, pending: Array<{ at: number; done: () => void }>): JevFn {
-    return async (state) => {
-        const answer = await jev(state)
+    return async (state, hint) => {
+        const answer = await jev(state, hint)
         await new Promise<void>((done) => pending.push({ at: sim.clock + lag, done }))
         return { ...answer, latencyMs: lag }
     }
@@ -100,6 +142,8 @@ interface LevelBench {
     longestIdleMs: number
     damage: { bite: number; shot: number; lava: number }
     stats: Stats
+    // With --attempts: deaths before the win (or before giving up) in each run.
+    deaths: number[]
 }
 
 function benchLine(b: LevelBench): string {
@@ -110,30 +154,38 @@ function benchLine(b: LevelBench): string {
         `pickups ${JSON.stringify(b.stats.pickups)}, picks ${JSON.stringify(b.stats.picks)}`,
         `idle ${share}% (longest ${b.longestIdleMs} ms), damage bite ${b.damage.bite} shot ${b.damage.shot} lava ${b.damage.lava}`,
         `watchdog ${b.stats.watchdog}, forced heal ${b.stats.forcedHeal}, predicted ${b.stats.predicted}/${b.stats.decisions}`,
+        `lessons active ${b.stats.lessonActive}, override ${b.stats.lessonOverride}, learned by LLM ${b.stats.lessonsLlm} by rule ${b.stats.lessonsRule}`,
+        ...(b.deaths.length ? [`deaths before the win ${JSON.stringify(b.deaths)}, total ${b.deaths.reduce((a, v) => a + v, 0)}`] : []),
         summary(b.stats, b.seconds),
     ].join("\n  ")
 }
 
 async function runSim(opts: SimOpts): Promise<void> {
     const api = loadLogic()
-    const levels = opts.level.toUpperCase() === "ALL" ? api.LEVELS.map((_: unknown, i: number) => i) : [levelIndex(api, opts.level)]
+    const levels = simLevels(api, opts.level)
     const jev = pickJev(opts.fake)
     const log = openLog()
-    console.log(`sim ${levels.map((l: number) => api.LEVELS[l].name).join(", ")} ${DIFFICULTIES[opts.difficulty]}, ${opts.runs} run(s) each, ${opts.fake ? "fake picks" : jevModel()}, log ${log.file}`)
+    console.log(`sim ${levels.map((l) => l.name).join(", ")} ${DIFFICULTIES[opts.difficulty]}, ${opts.runs} run(s) each, ${opts.fake ? "fake picks" : jevModel()}, log ${log.file}`)
     const benches: LevelBench[] = []
     for (const level of levels) benches.push(await simLevel(api, level, jev, log, opts))
     if (benches.length > 1) console.log("bench:")
     for (const b of benches) console.log(benchLine(b))
+    if (opts.lessons) {
+        console.log(`lessons kept: ${opts.lessons.store.lessons.length}`)
+        for (const l of opts.lessons.store.lessons) console.log(`  ${lessonLine(l)}`)
+    }
 }
 
-async function simLevel(api: ReturnType<typeof loadLogic>, level: number, jev: JevFn, log: ReturnType<typeof openLog>, opts: SimOpts): Promise<LevelBench> {
+async function simLevel(api: ReturnType<typeof loadLogic>, level: SimLevel, jev: JevFn, log: ReturnType<typeof openLog>, opts: SimOpts): Promise<LevelBench> {
     const bench: LevelBench = {
-        name: api.LEVELS[level].name, runs: opts.runs, wins: 0, seconds: 0, hpAtEnd: [], idleMs: 0, playMs: 0,
-        longestIdleMs: 0, damage: { bite: 0, shot: 0, lava: 0 }, stats: emptyStats(),
+        name: level.name, runs: opts.runs, wins: 0, seconds: 0, hpAtEnd: [], idleMs: 0, playMs: 0,
+        longestIdleMs: 0, damage: { bite: 0, shot: 0, lava: 0 }, stats: emptyStats(), deaths: [],
     }
     let recorded = false
+    const retry = opts.attempts > 1
     for (let run = 1; run <= opts.runs; run++) {
-        const sim = new SimConsole(level, opts.difficulty)
+        const sim = new SimConsole(level.index, opts.difficulty, undefined, retry, level.endless)
+        const over = () => !!sim.result || (retry && (sim.cleared > 0 || sim.deaths >= opts.attempts))
         sim.reflexes = opts.reflexes
         const now = opts.fast ? () => sim.clock : Date.now
         const pending: Array<{ at: number; done: () => void }> = []
@@ -144,10 +196,13 @@ async function simLevel(api: ReturnType<typeof loadLogic>, level: number, jev: J
             log.write({ ...rec, run } as LogRecord)
             film?.record(rec)
             if (!opts.quiet) printDecision(rec)
-        }, now, undefined, { predict: opts.predict })
-        const limit = opts.timeout * 1000
+        }, now, undefined, { predict: opts.predict, lessons: opts.lessons })
+        const limit = opts.timeout * 1000 * Math.max(1, opts.attempts)
+        const w0 = { hp: 0, kills: 0, total: 0 }
+        const keep = () => Object.assign(w0, { hp: sim.world.health, kills: sim.world.kills, total: sim.world.total })
         if (opts.fast) {
-            while (!sim.result && sim.clock < limit) {
+            while (!over() && sim.clock < limit) {
+                if (sim.cleared === 0) keep()
                 sim.step()
                 for (const p of pending.filter((p) => p.at <= sim.clock)) {
                     pending.splice(pending.indexOf(p), 1)
@@ -158,17 +213,22 @@ async function simLevel(api: ReturnType<typeof loadLogic>, level: number, jev: J
             }
         } else {
             let last = Date.now()
-            while (!sim.result && sim.clock < limit) {
+            while (!over() && sim.clock < limit) {
                 await new Promise((resolve) => setTimeout(resolve, SIM_DT))
                 const t = Date.now()
-                for (let left = t - last; left >= SIM_DT && !sim.result; left -= SIM_DT) sim.step()
+                for (let left = t - last; left >= SIM_DT && !over(); left -= SIM_DT) {
+                    if (sim.cleared === 0) keep()
+                    sim.step()
+                }
                 last = t - ((t - last) % SIM_DT)
             }
             await bridge.idle()
         }
-        const w = sim.world
-        const result = sim.result ?? "timeout"
+        await bridge.lessonsIdle()
+        const w = { health: w0.hp, kills: w0.kills, total: w0.total }
+        const result = retry ? (sim.cleared > 0 ? "won" : sim.deaths >= opts.attempts ? "dead" : sim.result ?? "timeout") : sim.result ?? "timeout"
         if (result === "won") bench.wins++
+        if (retry) bench.deaths.push(sim.deaths)
         bench.seconds += sim.clock / 1000
         bench.hpAtEnd.push(w.health)
         bench.idleMs += sim.idleMs
@@ -202,10 +262,11 @@ async function checkConsole(): Promise<void> {
     await usb.close()
 }
 
-async function runConsole(fake: boolean, filming: boolean): Promise<void> {
+async function runConsole(fake: boolean, filming: boolean, lessonFlags: LessonFlags): Promise<void> {
     const api = loadLogic()
     const jev = pickJev(fake)
     const log = openLog()
+    const lessons = openLessons(lessonFlags, "console", fake)
     const film = filming ? openFilm() : null
     const usb = new Hf2Transport()
     usb.open()
@@ -220,9 +281,10 @@ async function runConsole(fake: boolean, filming: boolean): Promise<void> {
         log.write(rec)
         film?.recorder.record(rec)
         printDecision(rec)
-    })
+    }, Date.now, undefined, { lessons })
     const stop = async () => {
         console.log(summary(bridge.stats, (Date.now() - started) / 1000))
+        await bridge.lessonsIdle()
         await usb.close()
         process.exit(0)
     }
@@ -246,13 +308,18 @@ async function main(): Promise<void> {
             quiet: { type: "boolean", default: false },
             check: { type: "boolean", default: false },
             film: { type: "boolean", default: false },
+            attempts: { type: "string", default: "1" },
+            lessons: { type: "boolean", default: false },
+            "lessons-file": { type: "string" },
+            "lessons-reset": { type: "boolean", default: false },
         },
     })
     const difficulty = DIFFICULTIES.indexOf(values.difficulty.toLowerCase())
     if (difficulty < 0) throw new Error(`--difficulty: ${DIFFICULTIES.join(", ")}`)
     if (values.fast && !values.fake) throw new Error("--fast needs --fake: real Jev runs in real time")
+    const lessonFlags: LessonFlags = { on: values.lessons, file: values["lessons-file"], reset: values["lessons-reset"] }
     if (values.check) return checkConsole()
-    if (values.sim === undefined) return runConsole(values.fake, values.film)
+    if (values.sim === undefined) return runConsole(values.fake, values.film, lessonFlags)
     const film = values.film ? openFilm() : null
     if (film) console.log(`film ${film.file}`)
     return runSim({
@@ -268,6 +335,8 @@ async function main(): Promise<void> {
         record: values.record,
         film: film?.recorder ?? null,
         quiet: values.quiet,
+        attempts: Math.max(1, Number(values.attempts)),
+        lessons: openLessons(lessonFlags, "sim", values.fake),
     })
 }
 

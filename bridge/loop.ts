@@ -1,8 +1,9 @@
 // The bridge loop: console snapshot -> shadow world -> facts -> Jev -> one command in the mailbox.
 // One Jev request in flight; whatever snapshot is newest when it returns gets the next request.
 import type { LogicApi, World } from "../load-logic.ts"
-import { decide, mustHeal, type Decision } from "./decide.ts"
+import { applyLesson, decide, lessonLabel, mustHeal, type Decision } from "./decide.ts"
 import type { Action, JevAnswer, JevFn } from "./jev.ts"
+import { activeLesson, learn, lessonText, postMortem, Trace, type ActiveLesson, type Learned, type LessonStore, type ReflectFn } from "./lessons.ts"
 import { boxWrites, encodeBox, nextSeq, type BoxWrite } from "./mailbox.ts"
 import { Memory } from "./memory.ts"
 import { facts, progressText, situate, type Situation } from "./observe.ts"
@@ -18,7 +19,7 @@ export interface Transport {
 }
 
 export interface LogRecord {
-    kind: "decision" | "won" | "dead" | "skip" | "watchdog"
+    kind: "decision" | "won" | "dead" | "skip" | "watchdog" | "lesson"
     at: number
     n?: number
     lvl?: string
@@ -27,6 +28,11 @@ export interface LogRecord {
     decision?: Decision
     seq?: number
     reason?: string
+    // Decision: id of the lesson in force and whether it replaced Jev's pick.
+    lesson?: string
+    override?: boolean
+    // Lesson record: what the death taught.
+    learned?: Learned
 }
 
 export interface Stats {
@@ -44,17 +50,28 @@ export interface Stats {
     forcedHeal: number
     // Facts described the predicted moment rather than the snapshot.
     predicted: number
+    // Decisions with a death lesson in force, and the ones where it replaced Jev's pick.
+    lessonActive: number
+    lessonOverride: number
+    // Lessons learned from deaths, by who wrote them.
+    lessonsLlm: number
+    lessonsRule: number
     // Jev picks by action, and items the player picked up by kind (seen in the shadow world).
     picks: Record<string, number>
     pickups: Record<string, number>
 }
 
 export function emptyStats(): Stats {
-    return { decisions: 0, errors: 0, latencies: [], cost: 0, won: 0, dead: 0, stale: 0, skipped: 0, watchdog: 0, forcedHeal: 0, predicted: 0, picks: {}, pickups: {} }
+    return {
+        decisions: 0, errors: 0, latencies: [], cost: 0, won: 0, dead: 0, stale: 0, skipped: 0, watchdog: 0, forcedHeal: 0, predicted: 0,
+        lessonActive: 0, lessonOverride: 0, lessonsLlm: 0, lessonsRule: 0, picks: {}, pickups: {},
+    }
 }
 
+const COUNTERS = ["decisions", "errors", "cost", "won", "dead", "stale", "skipped", "watchdog", "forcedHeal", "predicted", "lessonActive", "lessonOverride", "lessonsLlm", "lessonsRule"] as const
+
 export function addStats(total: Stats, s: Stats): void {
-    for (const k of ["decisions", "errors", "cost", "won", "dead", "stale", "skipped", "watchdog", "forcedHeal", "predicted"] as const) total[k] += s[k]
+    for (const k of COUNTERS) total[k] += s[k]
     total.latencies.push(...s.latencies)
     for (const [k, v] of Object.entries(s.picks)) total.picks[k] = (total.picks[k] ?? 0) + v
     for (const [k, v] of Object.entries(s.pickups)) total.pickups[k] = (total.pickups[k] ?? 0) + v
@@ -72,6 +89,8 @@ const PREDICT_DT = 20
 export interface BridgeOptions {
     // Describe the world as it will be when Jev's answer lands (default on).
     predict?: boolean
+    // Death lessons: where they live and who writes them (null reflect: the rule only).
+    lessons?: { store: LessonStore; reflect: ReflectFn | null } | null
 }
 
 interface Sent {
@@ -105,6 +124,13 @@ export class Bridge {
     private taken: boolean[] = []
     private still: { key: string; x: number; y: number; since: number; fired: boolean } | null = null
     private sent: Sent | null = null
+    private readonly trace = new Trace()
+    // `lvl:hash` of the latest snapshot, the key of zone lessons.
+    private mapKey = ""
+    // Lessons in force at least once in this attempt, credited on a win.
+    private activeIds = new Set<string>()
+    private learning: Promise<void> = Promise.resolve()
+    private readonly lessons: BridgeOptions["lessons"]
     private readonly predict: boolean
     private readonly api: LogicApi
     private readonly transport: Transport
@@ -131,6 +157,7 @@ export class Bridge {
         this.ahead = new Shadow(api)
         this.seq = seq
         this.predict = opts.predict ?? true
+        this.lessons = opts.lessons ?? null
         transport.onLine((line) => this.line(line))
     }
 
@@ -139,12 +166,18 @@ export class Bridge {
         return this.inFlight ?? Promise.resolve()
     }
 
+    // Resolves once every death so far has been turned into a lesson (or not).
+    lessonsIdle(): Promise<void> {
+        return this.learning
+    }
+
     line(raw: string): void {
         const msg = this.parser.line(raw)
         if (!msg) return
         if (msg.kind === "won" || msg.kind === "dead") {
             if (msg.kind === "won") this.stats.won++
             else this.stats.dead++
+            this.endAttempt(msg.kind)
             this.attempt++
             this.history = []
             this.latest = null
@@ -166,8 +199,38 @@ export class Bridge {
         }
         const sent = this.history.find((h) => h.seq === snap.ack.seq)
         if (sent) sent.result = snap.ack.stale ? "dropped" : snap.ack.result === "run" ? "in progress" : snap.ack.result
+        if (this.lessons) this.trace.snap(this.api, this.shadow.sync(snap), snap)
+        this.mapKey = `${snap.lvl}:${snap.hash}`
         this.latest = snap
         this.kick()
+    }
+
+    // A win credits the lessons used on the way; a death becomes a lesson in the background, so the
+    // retry starts at once and picks the lesson up when it is ready.
+    private endAttempt(kind: "won" | "dead"): void {
+        const lessons = this.lessons
+        const used = [...this.activeIds]
+        this.activeIds.clear()
+        if (!lessons) return
+        if (kind === "won") {
+            if (used.length > 0) {
+                lessons.store.win(used)
+                lessons.store.save()
+            }
+            this.trace.reset()
+            return
+        }
+        const world = this.shadow.world
+        this.trace.dead(this.api, world, this.latest)
+        const death = world ? postMortem(this.trace, this.mapKey, this.latest?.lvl ?? this.mapKey.split(":")[0]) : null
+        this.trace.reset()
+        if (!world || !death) return
+        this.learning = this.learning.then(async () => {
+            const learned = await learn(this.api, world, lessons.store, death, lessons.reflect)
+            if (learned.source === "llm") this.stats.lessonsLlm++
+            else if (learned.source === "rule") this.stats.lessonsRule++
+            this.log({ kind: "lesson", at: this.now(), lvl: death.lvl, learned, reason: learned.note })
+        })
     }
 
     private kick(): void {
@@ -188,7 +251,11 @@ export class Bridge {
         const view = this.predicted(snap) ?? { world, sit }
         const recent = this.history.map((h) => `${h.action} ${h.result}`)
         const goal = `${snap.lvl}:${view.sit.goal}:${view.sit.goalCell}`
-        const state = facts(this.api, view.world, view.sit, recent, progressText(goal === this.goal ? this.steps : null, view.sit.steps), { stalledMs })
+        const lesson = this.activeLesson(world, sit)
+        const state = facts(this.api, view.world, view.sit, recent, progressText(goal === this.goal ? this.steps : null, view.sit.steps), {
+            stalledMs,
+            lesson: lesson ? lessonText(lesson) : undefined,
+        })
         this.goal = goal
         this.steps = view.sit.steps
         const watchdog = this.watchdog(snap, stalledMs)
@@ -198,12 +265,44 @@ export class Bridge {
                 pick = "heal"
                 this.stats.forcedHeal++
             }
-            return decide(this.api, world, sit, pick, answer.danger)
-        }, sit.at)
+            const taught = applyLesson(lesson?.action ?? null, pick, watchdog)
+            const override = taught !== pick
+            if (override) this.stats.lessonOverride++
+            const decision = decide(this.api, world, sit, taught, answer.danger)
+            if (override) decision.label = lessonLabel(decision.label)
+            if (this.lessons) this.tracePick(snap, sit, answer.action, decision.action, lesson)
+            return { decision, note: lesson ? { lesson: lesson.lesson.id, override } : {} }
+        }, sit.at, lesson?.action ?? null)
             .finally(() => {
                 this.inFlight = null
                 this.kick()
             })
+    }
+
+    private activeLesson(world: World, sit: Situation): ActiveLesson | null {
+        if (!this.lessons) return null
+        const a = activeLesson(this.api, world, sit, this.lessons.store.forKey(this.mapKey), this.mapKey)
+        if (a) {
+            this.stats.lessonActive++
+            this.activeIds.add(a.lesson.id)
+        }
+        return a
+    }
+
+    private tracePick(snap: Snapshot, sit: Situation, pick: Action, sent: Action, lesson: ActiveLesson | null): void {
+        this.trace.pick({
+            k: "pick",
+            t: snap.t,
+            hp: snap.hp,
+            cell: sit.at,
+            pick,
+            sent,
+            enemies: sit.enemies.map((e) => `${e.kind} ${e.cells} cells${e.inBiteRange ? " biting" : ""}`),
+            fireballs: sit.fireballs.length,
+            medkit: sit.medkit?.steps ?? null,
+            shotgun: sit.shotgun?.steps ?? null,
+            lesson: lesson?.lesson.id ?? "",
+        })
     }
 
     // Time out of combat without moving, from the console clock.
@@ -260,14 +359,20 @@ export class Bridge {
         this.taken = now
     }
 
-    private async ask(snap: Snapshot, state: Record<string, unknown>, choose: (a: JevAnswer) => Decision, from: Cell): Promise<void> {
-        const answer = await this.jev(state)
+    private async ask(
+        snap: Snapshot,
+        state: Record<string, unknown>,
+        choose: (a: JevAnswer) => { decision: Decision; note: Partial<LogRecord> },
+        from: Cell,
+        lesson: Action | null,
+    ): Promise<void> {
+        const answer = await this.jev(state, lesson ? { lesson } : undefined)
         if (answer.error) this.stats.errors++
         else this.stats.picks[answer.action] = (this.stats.picks[answer.action] ?? 0) + 1
         this.stats.latencies.push(answer.latencyMs)
         this.stats.cost += answer.cost
         if (!this.latest || this.latest.run !== snap.run || this.latest.lvl !== snap.lvl) return
-        const decision = choose(answer)
+        const { decision, note } = choose(answer)
         this.seq = nextSeq(this.seq)
         const box = encodeBox({
             seq: this.seq,
@@ -285,7 +390,7 @@ export class Bridge {
         this.sent = { cmd: decision.cmd, a: decision.a, b: decision.b, route: decision.route, from }
         this.stats.decisions++
         this.history = [...this.history, { seq: this.seq, action: decision.action, result: "sent" }].slice(-RECENT)
-        this.log({ kind: "decision", at: this.now(), n: snap.n, lvl: snap.lvl, state, answer, decision, seq: this.seq })
+        this.log({ kind: "decision", at: this.now(), n: snap.n, lvl: snap.lvl, state, answer, decision, seq: this.seq, ...note })
     }
 }
 

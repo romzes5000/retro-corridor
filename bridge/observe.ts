@@ -74,7 +74,7 @@ export interface Situation {
     aroundLava: boolean
 }
 
-const ENEMY_NAMES = ["imp", "shooter", "knight", "boss"]
+export const ENEMY_NAMES = ["imp", "shooter", "knight", "boss"]
 const KEY_NAMES: Record<number, string> = { 1: "red", 2: "blue" }
 const NEAR_ENEMIES = 4
 const ENEMY_RANGE = 8
@@ -373,10 +373,15 @@ export function weaponState(world: World, sit: Situation): "strong" | "weak" | "
 export interface FactsExtra {
     // Out of combat and not moving for this long, from the bridge's own clock.
     stalledMs?: number
+    // Text of the death lesson in force.
+    lesson?: string
 }
 
+// Where the `lesson` field goes. Field order changes what Jev does (see weapon_state).
+export const LESSON_POSITION: "last" | "before_weapon_state" = "last"
+
 // The JSON state Jev reads. English only, short, no instructions.
-export function facts(api: LogicApi, world: World, sit: Situation, recent: string[], progress = "new goal", extra: FactsExtra = {}): Record<string, unknown> {
+export function facts(api: LogicApi, world: World, sit: Situation, recent: string[], progress = "new goal", extra: FactsExtra = {}, lessonAt = LESSON_POSITION): Record<string, unknown> {
     const weapon = world.weapon === api.WEAPON_SHOTGUN ? SHOTGUN_TEXT : "pistol, 1 damage per shot"
     const medkit = itemFacts(api, world, sit.medkit)
     const state: Record<string, unknown> = {
@@ -408,10 +413,12 @@ export function facts(api: LogicApi, world: World, sit: Situation, recent: strin
         shotgun: itemFacts(api, world, sit.shotgun),
         lava: sit.lava ? { under_you: sit.lava.under, nearest_cells: sit.lava.cells, direction: sit.lava.direction } : null,
         recent,
-        // Last on purpose: right after `weapon` Jev never took the shotgun (0 of 6), here 6 of 6.
-        weapon_state: weaponState(world, sit),
     }
+    if (extra.lesson && lessonAt === "before_weapon_state") state.lesson = extra.lesson
+    // Last on purpose: right after `weapon` Jev never took the shotgun (0 of 6), here 6 of 6.
+    state.weapon_state = weaponState(world, sit)
     if ((extra.stalledMs ?? 0) >= STALL_FACT_MS) state.stalled = `standing still for ${((extra.stalledMs ?? 0) / 1000).toFixed(1)} s`
+    if (extra.lesson && lessonAt === "last") state.lesson = extra.lesson
     return state
 }
 
