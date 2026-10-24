@@ -77,7 +77,10 @@ namespace corridor {
         CAMX.push(Math.idiv((2 * c + 1 - VIEW_W) * FP, VIEW_W))
     }
 
-    export class Imp {
+    export const ENEMY_IMP = 0
+
+    export class Enemy {
+        kind: number
         x: number
         y: number
         hp: number
@@ -91,7 +94,8 @@ namespace corridor {
         hunting: boolean
         lastX: number
         lastY: number
-        constructor(x: number, y: number) {
+        constructor(kind: number, x: number, y: number) {
+            this.kind = kind
             this.x = x
             this.y = y
             this.hunting = false
@@ -152,7 +156,7 @@ namespace corridor {
         turnHold: number
         won: boolean
         lost: boolean
-        imps: Imp[]
+        enemies: Enemy[]
         items: Item[]
         events: string[]
         doors: Door[]
@@ -193,7 +197,7 @@ namespace corridor {
             this.turnHold = 0
             this.won = false
             this.lost = false
-            this.imps = []
+            this.enemies = []
             this.items = []
             this.events = []
         }
@@ -265,7 +269,7 @@ namespace corridor {
                     world.x = center(c)
                     world.y = center(r)
                 } else if (ch == "E") {
-                    world.imps.push(new Imp(center(c), center(r)))
+                    world.enemies.push(new Enemy(ENEMY_IMP, center(c), center(r)))
                 } else if (ch == "H") {
                     world.items.push(new Item(center(c), center(r), ITEM_HEALTH))
                 } else if (ch == "A") {
@@ -281,7 +285,7 @@ namespace corridor {
         }
         setupDoors(world)
         world.itemsTotal = world.items.length
-        world.total = world.imps.length
+        world.total = world.enemies.length
         world.ang = ang & (ANGLES - 1)
         return world
     }
@@ -440,12 +444,12 @@ namespace corridor {
         return Math.floor(Math.sqrt(dx * dx + dy * dy))
     }
 
-    // Blocks only steps that bring the player closer to a live imp, so backing off always works.
-    function blockedByImp(world: World, x: number, y: number): boolean {
-        for (const imp of world.imps) {
-            if (imp.dead) continue
-            const next = distance(imp.x, imp.y, x, y)
-            if (next < TOUCH && next < distance(imp.x, imp.y, world.x, world.y)) return true
+    // Blocks only steps that bring the player closer to a live enemy, so backing off always works.
+    function blockedByEnemy(world: World, x: number, y: number): boolean {
+        for (const enemy of world.enemies) {
+            if (enemy.dead) continue
+            const next = distance(enemy.x, enemy.y, x, y)
+            if (next < TOUCH && next < distance(enemy.x, enemy.y, world.x, world.y)) return true
         }
         return false
     }
@@ -461,7 +465,7 @@ namespace corridor {
         if (mx != 0) {
             const nx = world.x + mx
             const probe = nx + (mx > 0 ? r : -r)
-            if (fits(world, nx, world.y, r) && !blockedByImp(world, nx, world.y)) {
+            if (fits(world, nx, world.y, r) && !blockedByEnemy(world, nx, world.y)) {
                 world.x = nx
                 moved += Math.abs(mx)
             } else if (tileAt(world, probe >> 10, world.y >> 10) == TILE_EXIT) {
@@ -471,7 +475,7 @@ namespace corridor {
         if (my != 0) {
             const ny = world.y + my
             const probe = ny + (my > 0 ? r : -r)
-            if (fits(world, world.x, ny, r) && !blockedByImp(world, world.x, ny)) {
+            if (fits(world, world.x, ny, r) && !blockedByEnemy(world, world.x, ny)) {
                 world.y = ny
                 moved += Math.abs(my)
             } else if (tileAt(world, world.x >> 10, probe >> 10) == TILE_EXIT) {
@@ -492,33 +496,33 @@ namespace corridor {
         }
     }
 
-    function moveImp(world: World, imp: Imp, mx: number, my: number): void {
+    function moveEnemy(world: World, enemy: Enemy, mx: number, my: number): void {
         const r = IMP_RADIUS
-        const nx = imp.x + mx
-        if (fits(world, nx, imp.y, r)) {
-            if (distance(nx, imp.y, world.x, world.y) >= TOUCH) imp.x = nx
+        const nx = enemy.x + mx
+        if (fits(world, nx, enemy.y, r)) {
+            if (distance(nx, enemy.y, world.x, world.y) >= TOUCH) enemy.x = nx
         } else {
-            nudgeDoor(world, imp.x + (mx > 0 ? r + 128 : -r - 128), imp.y)
+            nudgeDoor(world, enemy.x + (mx > 0 ? r + 128 : -r - 128), enemy.y)
         }
-        const ny = imp.y + my
-        if (fits(world, imp.x, ny, r)) {
-            if (distance(imp.x, ny, world.x, world.y) >= TOUCH) imp.y = ny
+        const ny = enemy.y + my
+        if (fits(world, enemy.x, ny, r)) {
+            if (distance(enemy.x, ny, world.x, world.y) >= TOUCH) enemy.y = ny
         } else {
-            nudgeDoor(world, imp.x, imp.y + (my > 0 ? r + 128 : -r - 128))
+            nudgeDoor(world, enemy.x, enemy.y + (my > 0 ? r + 128 : -r - 128))
         }
     }
 
-    // Nearest live imp under the crosshair and in front of the wall, or -1.
+    // Nearest live enemy under the crosshair and in front of the wall, or -1.
     export function target(world: World): number {
         const hit = new Hit()
         castColumn(world, VIEW_W >> 1, hit)
         const p = new Proj()
         let best = -1
         let bestDepth = hit.dist
-        for (let i = 0; i < world.imps.length; i++) {
-            const imp = world.imps[i]
-            if (imp.dead) continue
-            project(world, imp.x, imp.y, p)
+        for (let i = 0; i < world.enemies.length; i++) {
+            const enemy = world.enemies[i]
+            if (enemy.dead) continue
+            project(world, enemy.x, enemy.y, p)
             if (!p.visible || p.depth >= bestDepth) continue
             const reach = Math.max(4, (p.size * 3) >> 3)
             if (Math.abs(p.screenX - (VIEW_W >> 1)) <= reach) {
@@ -541,12 +545,12 @@ namespace corridor {
         emit(world, "shoot")
         const i = target(world)
         if (i < 0) return
-        const imp = world.imps[i]
-        imp.hp -= 1
-        imp.hurt = IMP_HURT_MS
-        imp.awake = true
-        if (imp.hp <= 0) {
-            imp.dead = true
+        const enemy = world.enemies[i]
+        enemy.hp -= 1
+        enemy.hurt = IMP_HURT_MS
+        enemy.awake = true
+        if (enemy.hp <= 0) {
+            enemy.dead = true
             world.kills += 1
             world.score += 100
             emit(world, "kill")
@@ -555,27 +559,27 @@ namespace corridor {
         }
     }
 
-    function thinkImp(world: World, imp: Imp, dt: number): void {
-        if (imp.cool > 0) imp.cool -= dt
-        if (imp.hurt > 0) imp.hurt -= dt
-        if (imp.attack > 0) imp.attack -= dt
-        const d = distance(imp.x, imp.y, world.x, world.y)
-        imp.sees = d < IMP_SIGHT && canSee(world, imp.x, imp.y, world.x, world.y)
-        if (!imp.sees) {
-            if (imp.hunting && imp.hurt <= 0) chase(imp, imp.lastX, imp.lastY, dt, world)
+    function thinkEnemy(world: World, enemy: Enemy, dt: number): void {
+        if (enemy.cool > 0) enemy.cool -= dt
+        if (enemy.hurt > 0) enemy.hurt -= dt
+        if (enemy.attack > 0) enemy.attack -= dt
+        const d = distance(enemy.x, enemy.y, world.x, world.y)
+        enemy.sees = d < IMP_SIGHT && canSee(world, enemy.x, enemy.y, world.x, world.y)
+        if (!enemy.sees) {
+            if (enemy.hunting && enemy.hurt <= 0) chase(enemy, enemy.lastX, enemy.lastY, dt, world)
             return
         }
-        imp.hunting = true
-        imp.lastX = world.x
-        imp.lastY = world.y
-        if (!imp.awake) {
-            imp.awake = true
+        enemy.hunting = true
+        enemy.lastX = world.x
+        enemy.lastY = world.y
+        if (!enemy.awake) {
+            enemy.awake = true
             emit(world, "alert")
         }
         if (d <= IMP_REACH) {
-            if (imp.cool <= 0) {
-                imp.cool = IMP_COOLDOWN
-                imp.attack = IMP_ATTACK_MS
+            if (enemy.cool <= 0) {
+                enemy.cool = IMP_COOLDOWN
+                enemy.attack = IMP_ATTACK_MS
                 world.health -= IMP_DAMAGE
                 emit(world, "hurt")
                 if (world.health <= 0) {
@@ -586,20 +590,20 @@ namespace corridor {
             }
             return
         }
-        if (imp.hurt > 0) return
-        chase(imp, world.x, world.y, dt, world)
+        if (enemy.hurt > 0) return
+        chase(enemy, world.x, world.y, dt, world)
     }
 
-    // Walks toward a point; once the last sighting is reached the imp gives up the hunt.
-    function chase(imp: Imp, tx: number, ty: number, dt: number, world: World): void {
-        const d = distance(imp.x, imp.y, tx, ty)
+    // Walks toward a point; once the last sighting is reached the enemy gives up the hunt.
+    function chase(enemy: Enemy, tx: number, ty: number, dt: number, world: World): void {
+        const d = distance(enemy.x, enemy.y, tx, ty)
         if (d < 160) {
-            imp.hunting = imp.sees
+            enemy.hunting = enemy.sees
             return
         }
         const step = Math.idiv(IMP_SPEED * dt, 1000)
-        moveImp(world, imp, Math.idiv((tx - imp.x) * step, d), Math.idiv((ty - imp.y) * step, d))
-        imp.walk += step
+        moveEnemy(world, enemy, Math.idiv((tx - enemy.x) * step, d), Math.idiv((ty - enemy.y) * step, d))
+        enemy.walk += step
     }
 
     function pickUp(world: World): void {
@@ -661,8 +665,8 @@ namespace corridor {
             if (useAhead(world)) world.fireCool = USE_COOLDOWN
             else fire(world)
         }
-        for (const imp of world.imps) {
-            if (!imp.dead) thinkImp(world, imp, dt)
+        for (const enemy of world.enemies) {
+            if (!enemy.dead) thinkEnemy(world, enemy, dt)
             if (world.lost) return
         }
         pickUp(world)

@@ -3,7 +3,8 @@ import vm from "node:vm"
 import ts from "typescript"
 import { FakeImage, imageApi } from "./fake-image.ts"
 
-export interface Imp {
+export interface Enemy {
+    kind: number
     [k: string]: any
     x: number
     y: number
@@ -54,7 +55,7 @@ export interface World {
     turnHold: number
     won: boolean
     lost: boolean
-    imps: Imp[]
+    enemies: Enemy[]
     items: Item[]
     events: string[]
 }

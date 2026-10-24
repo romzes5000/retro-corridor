@@ -112,7 +112,7 @@ test("хитскан не проходит сквозь стену", () => {
     assert.equal(target(walled), -1)
     const events = run(walled, 100, (i) => { i.fire = true })
     assert.ok(events.includes("shoot"))
-    assert.equal(walled.imps[0].hp, api.IMP_HP)
+    assert.equal(walled.enemies[0].hp, api.IMP_HP)
 
     const open = createWorld(["######", "#S..E#", "######"], EAST)
     assert.equal(target(open), 0)
@@ -125,7 +125,7 @@ test("два попадания убивают беса, патроны конч
     assert.ok(events.includes("kill"))
     assert.equal(world.kills, 1)
     assert.equal(world.score, 100)
-    assert.equal(world.imps[0].dead, true)
+    assert.equal(world.enemies[0].dead, true)
 
     world.ammo = 0
     world.fireCool = 0
@@ -149,16 +149,16 @@ test("спрайт за спиной невидим, справа — праве
 
 test("бес без прямой видимости не идёт, с видимостью — идёт", () => {
     const hidden = createWorld(["#########", "#S..#..E#", "#########"], EAST)
-    const hx = hidden.imps[0].x
-    assert.equal(canSee(hidden, hidden.x, hidden.y, hx, hidden.imps[0].y), false)
+    const hx = hidden.enemies[0].x
+    assert.equal(canSee(hidden, hidden.x, hidden.y, hx, hidden.enemies[0].y), false)
     run(hidden, 1000, () => {})
-    assert.equal(hidden.imps[0].x, hx)
-    assert.equal(hidden.imps[0].awake, false)
+    assert.equal(hidden.enemies[0].x, hx)
+    assert.equal(hidden.enemies[0].awake, false)
 
     const open = createWorld(["#########", "#S.....E#", "#########"], EAST)
-    const ox = open.imps[0].x
+    const ox = open.enemies[0].x
     const events = run(open, 1000, () => {})
-    assert.ok(open.imps[0].x < ox - FP, "бес подошёл")
+    assert.ok(open.enemies[0].x < ox - FP, "бес подошёл")
     assert.ok(events.includes("alert"))
 })
 

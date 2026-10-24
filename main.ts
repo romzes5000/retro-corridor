@@ -83,7 +83,7 @@ let fpsLog = 0
 
 function titleWorld(): corridor.World {
     const w = corridor.createWorld(corridor.CAMPAIGN, 0)
-    w.imps = []
+    w.enemies = []
     return w
 }
 

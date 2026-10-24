@@ -264,18 +264,18 @@ namespace corridorRender {
         }
     }
 
-    function impFrame(imp: corridor.Imp): number {
-        if (imp.dead) return IMP_DEAD
-        if (imp.hurt > 0) return IMP_HURT
-        if (imp.attack > 0) return IMP_ATTACK
-        return ((imp.walk >> 9) & 1) == 1 ? IMP_WALK_B : IMP_WALK_A
+    function impFrame(enemy: corridor.Enemy): number {
+        if (enemy.dead) return IMP_DEAD
+        if (enemy.hurt > 0) return IMP_HURT
+        if (enemy.attack > 0) return IMP_ATTACK
+        return ((enemy.walk >> 9) & 1) == 1 ? IMP_WALK_B : IMP_WALK_A
     }
 
     function drawThings(target: Image, world: corridor.World, ox: number, horizon: number): void {
         let n = 0
-        for (let i = 0; i < world.imps.length && n < order.length; i++) {
-            const imp = world.imps[i]
-            corridor.project(world, imp.x, imp.y, proj)
+        for (let i = 0; i < world.enemies.length && n < order.length; i++) {
+            const enemy = world.enemies[i]
+            corridor.project(world, enemy.x, enemy.y, proj)
             if (!proj.visible) continue
             order[n] = i
             depths[n] = proj.depth
@@ -310,10 +310,10 @@ namespace corridorRender {
                 const s = Math.min(2, proj.depth >> 12)
                 drawSprite(target, itemImages[item.kind][s], proj.depth, proj.screenX, proj.size, 38, ox, horizon)
             } else {
-                const imp = world.imps[id]
-                corridor.project(world, imp.x, imp.y, proj)
+                const enemy = world.enemies[id]
+                corridor.project(world, enemy.x, enemy.y, proj)
                 const s = Math.min(2, proj.depth >> 12)
-                drawSprite(target, impFrames[impFrame(imp)][s], proj.depth, proj.screenX, proj.size, 85, ox, horizon)
+                drawSprite(target, impFrames[impFrame(enemy)][s], proj.depth, proj.screenX, proj.size, 85, ox, horizon)
             }
         }
     }
@@ -352,10 +352,10 @@ namespace corridorRender {
             else if (item.kind == corridor.ITEM_KEY_BLUE) ic = 13
             target.fillRect(ix, iy, dot, dot, ic)
         }
-        for (const imp of world.imps) {
-            if (imp.dead || !imp.sees) continue
-            const ix = mx + ((imp.x * cell) >> 10) - (dot >> 1)
-            const iy = my + ((imp.y * cell) >> 10) - (dot >> 1)
+        for (const enemy of world.enemies) {
+            if (enemy.dead || !enemy.sees) continue
+            const ix = mx + ((enemy.x * cell) >> 10) - (dot >> 1)
+            const iy = my + ((enemy.y * cell) >> 10) - (dot >> 1)
             target.fillRect(ix, iy, dot, dot, 2)
         }
         const px = mx + ((world.x * cell) >> 10)

@@ -10,7 +10,7 @@ export type Task =
     | { kind: "faceCell"; cell: Cell }
     | { kind: "wait"; ms: number }
     | { kind: "push"; ms: number }
-    | { kind: "fire"; imp: number; ms: number }
+    | { kind: "fire"; enemy: number; ms: number }
     | { kind: "strafe"; dir: number; ms: number }
     | { kind: "turn"; dir: number; ms: number }
     | { kind: "map"; open: boolean }
@@ -219,13 +219,13 @@ export class Pilot {
                 if (this.elapsed >= task.ms) this.finish()
                 return input
             case "fire": {
-                const imp = world.imps[task.imp]
-                if (!imp || imp.dead || this.elapsed >= task.ms) {
+                const enemy = world.enemies[task.enemy]
+                if (!enemy || enemy.dead || this.elapsed >= task.ms) {
                     this.finish()
                     return input
                 }
-                const onTarget = this.aim(world, input, angleTo(api, world, imp.x, imp.y), AIM)
-                input.fire = onTarget && api.target(world) === task.imp
+                const onTarget = this.aim(world, input, angleTo(api, world, enemy.x, enemy.y), AIM)
+                input.fire = onTarget && api.target(world) === task.enemy
                 return input
             }
             case "map":
@@ -241,7 +241,7 @@ export class Pilot {
 }
 
 // Level-solving strategy for feature tests and demos: fetch the keys the route needs, walk to the
-// exit, and stop to shoot any imp that has spotted the player and is close enough to matter.
+// exit, and stop to shoot any enemy that has spotted the player and is close enough to matter.
 export function fightingPilot(api: LogicApi, world: World, exit?: Cell, exitAng?: number): (dt: number) => Input {
     const spot = exit ? { cell: exit, ang: exitAng ?? 0 } : exitSpot(api, world)
     const walker = new Pilot(api)
@@ -266,9 +266,9 @@ export function fightingPilot(api: LogicApi, world: World, exit?: Cell, exitAng?
             plan()
         }
         if (!fighter) {
-            const threat = world.imps.findIndex((imp) => !imp.dead && imp.sees
-                && api.distance(imp.x, imp.y, world.x, world.y) < 6 * api.FP)
-            if (threat >= 0) fighter = new Pilot(api, [{ kind: "fire", imp: threat, ms: 4000 }])
+            const threat = world.enemies.findIndex((enemy) => !enemy.dead && enemy.sees
+                && api.distance(enemy.x, enemy.y, world.x, world.y) < 6 * api.FP)
+            if (threat >= 0) fighter = new Pilot(api, [{ kind: "fire", enemy: threat, ms: 4000 }])
         }
         if (fighter) return fighter.next(world, dt)
         if (walker.done) plan()

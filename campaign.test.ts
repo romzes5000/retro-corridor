@@ -72,18 +72,18 @@ test("красная дверь без ключа — стена и звук, п
 test("бес на охоте открывает простую дверь, а цветная для него — стена", () => {
     for (const [tile, opens] of [["|", true], ["R", false]] as const) {
         const world = createWorld(["#########", "#S..%..E#", "#########"].map((row) => row.replace("%", tile)), 0)
-        const imp = world.imps[0]
-        imp.hunting = true
-        imp.lastX = world.x
-        imp.lastY = world.y
+        const enemy = world.enemies[0]
+        enemy.hunting = true
+        enemy.lastX = world.x
+        enemy.lastY = world.y
         run(world, 3000)
         const door = api.doorAt(world, 4, 1)
         if (opens) {
             assert.notEqual(door.state, api.DOOR_CLOSED, "бес открыл дверь")
-            assert.ok(imp.x < 4 * FP, `бес прошёл, x=${imp.x}`)
+            assert.ok(enemy.x < 4 * FP, `бес прошёл, x=${enemy.x}`)
         } else {
             assert.equal(door.state, api.DOOR_CLOSED)
-            assert.ok(imp.x > 5 * FP, `бес остался за дверью, x=${imp.x}`)
+            assert.ok(enemy.x > 5 * FP, `бес остался за дверью, x=${enemy.x}`)
         }
     }
 })
