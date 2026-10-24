@@ -26,6 +26,7 @@ import { learnedLine, lessonLine, LessonStore, lessonsFile, lessonsOn, makeRefle
 import { LiveBoard, LivePlayer, startWatch, WATCH_PORT, type Watch } from "./live.ts"
 import { addStats, Bridge, emptyStats, percentile, type BridgeOptions, type LogRecord, type Stats } from "./loop.ts"
 import { isBox } from "./mailbox.ts"
+import { LiveMap } from "./map.ts"
 import { recording, SIM_DT, SimConsole, simLevels, type SimLevel } from "./sim.ts"
 
 const DIFFICULTIES = ["easy", "normal", "hard"]
@@ -47,8 +48,8 @@ interface Recording {
     // Every console line and every bridge log record.
     line(raw: string): void
     record(rec: LogRecord): void
-    // The bridge whose counters the live page shows; a sim bench has a new one per run.
-    attach(stats: () => Stats): void
+    // The bridge whose counters and route the live page shows; a sim bench has a new one per run.
+    attach(bridge: Bridge): void
     close(): Promise<void>
 }
 
@@ -67,12 +68,15 @@ async function openRecording(filming: boolean, watch: WatchFlags | null, store: 
     let live: LivePlayer | null = null
     let board: LiveBoard | null = null
     let server: Watch | null = null
+    let map: LiveMap | null = null
     if (watch) {
         const game = loadGame()
         live = new LivePlayer(game)
         const b = new LiveBoard(game.corridor, live, store)
+        const m = new LiveMap(game.corridor, live)
         board = b
-        server = await startWatch(game, live, { ...watch, status: () => b.status() })
+        map = m
+        server = await startWatch(game, live, { ...watch, status: () => b.status(), map: () => m.map(), overlay: () => m.overlay() })
         console.log(`watch ${server.url}`)
     }
     const recorder = new FilmRecorder((rec) => {
@@ -89,8 +93,9 @@ async function openRecording(filming: boolean, watch: WatchFlags | null, store: 
             const note = board?.record(rec)
             if (note) server?.publish("note", note)
         },
-        attach: (stats) => {
-            if (board) board.stats = stats
+        attach: (bridge) => {
+            if (board) board.stats = () => bridge.stats
+            if (map) map.route = () => bridge.route
         },
         close: async () => server?.close(),
     }
@@ -240,7 +245,7 @@ async function simLevel(api: ReturnType<typeof loadLogic>, level: SimLevel, jev:
             film?.record(rec)
             if (!opts.quiet) printDecision(rec)
         }, now, undefined, { predict: opts.predict, lessons: opts.lessons })
-        film?.attach(() => bridge.stats)
+        film?.attach(bridge)
         const limit = opts.timeout * 1000 * Math.max(1, opts.attempts)
         const w0 = { hp: 0, kills: 0, total: 0 }
         const keep = () => Object.assign(w0, { hp: sim.world.health, kills: sim.world.kills, total: sim.world.total })
@@ -325,7 +330,7 @@ async function runConsole(fake: boolean, filming: boolean, watch: WatchFlags | n
         film?.record(rec)
         printDecision(rec)
     }, Date.now, undefined, { lessons })
-    film?.attach(() => bridge.stats)
+    film?.attach(bridge)
     const stop = async () => {
         console.log(summary(bridge.stats, (Date.now() - started) / 1000))
         await bridge.lessonsIdle()

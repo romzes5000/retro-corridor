@@ -9,6 +9,7 @@ import { FilmRecorder, GAP_MS, TAIL_MS, type FilmRecord } from "./film.ts"
 import { LessonStore, type Draft } from "./lessons.ts"
 import { encodeFrame, LIVE_DELAY_MS, LiveBoard, LivePlayer, NO_SIGNAL, startWatch } from "./live.ts"
 import { Bridge, emptyStats, type LogRecord } from "./loop.ts"
+import { LiveMap } from "./map.ts"
 import { Parser, type Snapshot } from "./protocol.ts"
 import { levelIndex, SimConsole } from "./sim.ts"
 
@@ -274,6 +275,89 @@ test("сценарий: страница и поток — палитра, ка�
 
         await sleep(20)
         assert.equal((await get(`${watch.url}/healthz`)).body, "ok\n", "сервер жив после ухода клиента")
+    } finally {
+        await watch.close()
+    }
+})
+
+test("сценарий: карта и маршрут с прохождения HANGAR — холст карты на странице, карта раз на попытку, оверлей с путём от игрока до цели; /map получает только карту", async () => {
+    const live = new LivePlayer(game)
+    const map = new LiveMap(api, live)
+    const watch = await startWatch(game, live, { port: 0, frameMs: 5, map: () => map.map(), overlay: () => map.overlay(), overlayMs: 10 })
+    try {
+        const page = await get(`${watch.url}/`)
+        assert.match(page.body, /<canvas id="screen" width="160" height="120">/)
+        assert.match(page.body, /<canvas id="map" /)
+        assert.match(page.body, /mapView\(stream\)/)
+        assert.match(page.body, /addEventListener\("overlay"/)
+        assert.match(page.body, /#side \{[^}]*height: 480px;[^}]*overflow: hidden/, "панель справа не растёт из-за карты")
+        const alone = await get(`${watch.url}/map`)
+        assert.equal(alone.status, 200)
+        assert.match(alone.body, /<canvas id="map" /)
+        assert.match(alone.body, /new EventSource\("\/stream\?only=map"\)/)
+        assert.doesNotMatch(alone.body, /id="screen"/)
+
+        const client = await listen(`${watch.url}/stream`)
+        const mapClient = await listen(`${watch.url}/stream?only=map`)
+        const sim = new SimConsole(levelIndex(api, "HANGAR"), api.DIFF_NORMAL, 5)
+        const recorder = new FilmRecorder((rec) => live.push(rec))
+        sim.onLine((line) => recorder.line(line))
+        const bridge = new Bridge(sim.api, sim, fakeJev, (rec) => recorder.record(rec), () => sim.clock)
+        map.route = () => bridge.route
+        const play = async (steps: number) => {
+            for (let i = 0; i < steps; i++) {
+                sim.step()
+                if (i % 10 === 0) await sleep(6)
+            }
+        }
+        await play(300)
+        live.push({ k: "end", t: sim.clock, result: "dead" })
+        await play(40)
+        await sleep(40)
+        const late = await listen(`${watch.url}/stream`)
+        await sleep(5)
+        client.close()
+        mapClient.close()
+        late.close()
+        assert.deepEqual(late.events.slice(0, 3).map((e) => e.event), ["palette", "map", "overlay"], "новый клиент сразу получает карту и оверлей")
+        assert.equal(JSON.parse(late.events[1].data).seg, 2)
+
+        const maps = client.events.filter((e) => e.event === "map").map((e) => JSON.parse(e.data))
+        assert.deepEqual(maps.map((m) => m.seg), [1, 2], "карта — раз на попытку; повтор той же карты — новая попытка")
+        assert.deepEqual([maps[0].level, maps[0].w, maps[0].h, maps[0].rows[14][15], maps[0].doors.length], ["HANGAR", 16, 16, "E", 2])
+        const overlays = client.events.filter((e) => e.event === "overlay").map((e) => JSON.parse(e.data))
+        assert.ok(overlays.length > 5, `оверлеев ${overlays.length}`)
+        assert.ok(overlays.every((o) => maps.some((m) => m.seg === o.seg)), "оверлей не опережает свою карту")
+        const routed = overlays.filter((o) => o.goal && o.path.length > 1)
+        assert.ok(routed.length > 0)
+        const ends = (o: any) => JSON.stringify(o.goal.kind === "exit" ? o.path.at(-2) : o.path.at(-1)) === JSON.stringify(o.goal.cell)
+        assert.ok(routed.every((o) => typeof o.goal.what === "string" && ends(o)), "путь ведёт в клетку цели")
+        assert.ok(routed.some((o) => o.path[0][0] === Math.floor(o.player.x) && o.path[0][1] === Math.floor(o.player.y)), "путь начинается с клетки игрока")
+        assert.deepEqual([...new Set(mapClient.events.map((e) => e.event))].sort(), ["map", "overlay"], "/map не тянет кадры")
+    } finally {
+        await watch.close()
+    }
+})
+
+test("поток: первый оверлей нового клиента — там, где игрок сейчас, а не где был, когда никто не смотрел", async () => {
+    let wall = 0
+    const live = new LivePlayer(game, () => wall)
+    const map = new LiveMap(api, live)
+    const { world, link } = hangar()
+    const x0 = world.x
+    live.push(snap(link, world, 0))
+    world.x += 1000
+    wall = 250
+    live.push(snap(link, world, 250))
+    wall = 250 + LIVE_DELAY_MS + 400
+    const watch = await startWatch(game, live, { port: 0, frameMs: 60000, map: () => map.map(), overlay: () => map.overlay(), overlayMs: 60000 })
+    try {
+        const client = await listen(`${watch.url}/stream?only=map`)
+        await sleep(20)
+        client.close()
+        const first = client.events.find((e) => e.event === "overlay")
+        assert.ok(first)
+        assert.equal(JSON.parse(first.data).player.x, Math.round(((x0 + 1000) / api.FP) * 100) / 100)
     } finally {
         await watch.close()
     }

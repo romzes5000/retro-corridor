@@ -5,6 +5,7 @@ import { applyLesson, decide, lessonLabel, mustHeal, type Decision } from "./dec
 import type { Action, JevAnswer, JevFn } from "./jev.ts"
 import { activeLesson, learn, lessonText, postMortem, Trace, type ActiveLesson, type Learned, type LessonStore, type ReflectFn } from "./lessons.ts"
 import { boxWrites, encodeBox, nextSeq, type BoxWrite } from "./mailbox.ts"
+import { routeOf, type Route } from "./map.ts"
 import { Memory } from "./memory.ts"
 import { facts, progressText, situate, type Situation } from "./observe.ts"
 import { Parser, type Snapshot } from "./protocol.ts"
@@ -105,6 +106,8 @@ interface Sent {
 
 export class Bridge {
     readonly stats: Stats = emptyStats()
+    // Goal and path of the latest situation, for the map on the live page; null between attempts.
+    route: Route | null = null
     onEnd: (kind: "won" | "dead") => void = () => {}
     private readonly parser = new Parser()
     private readonly shadow: Shadow
@@ -186,6 +189,7 @@ export class Bridge {
             this.steps = null
             this.still = null
             this.sent = null
+            this.route = null
             this.log({ kind: msg.kind, at: this.now() })
             this.onEnd(msg.kind)
             return
@@ -249,6 +253,7 @@ export class Bridge {
         this.countPickups(`${snap.run}:${snap.lvl}`, world)
         this.memory.observe(level, this.api, world, snap.t, this.shadow.spawns)
         const sit = situate(this.api, world, this.memory)
+        this.route = routeOf(this.api, world, sit, this.memory, `${snap.run}:${snap.lvl}:${snap.hash}`)
         const stalledMs = this.stalled(level, snap, sit)
         const view = this.predicted(snap) ?? { world, sit }
         const recent = this.history.map((h) => `${h.action} ${h.result}`)

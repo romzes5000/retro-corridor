@@ -11,6 +11,7 @@ import type { Game, LogicApi, World } from "../load-logic.ts"
 import { drawBanner, FRAME_MS, GAP_MS, jevAlert, jevLine, SegmentPlayer, TAIL_MS, type FilmRecord, type JevRecord } from "./film.ts"
 import { learnedLine, lessonWhere, type Lesson, type LessonStore } from "./lessons.ts"
 import { emptyStats, percentile, type LogRecord, type Stats } from "./loop.ts"
+import { MAP_PAGE, MAP_PANEL, MAP_SCRIPT, MAP_STYLE, OVERLAY_MS } from "./map.ts"
 import type { Snapshot } from "./protocol.ts"
 
 export const LIVE_DELAY_MS = 300
@@ -37,6 +38,8 @@ interface Ended {
 export class LivePlayer {
     onJev: ((j: JevRecord) => void) | null = null
     problem = ""
+    // Bumped on every level attempt, the key of the map the page shows.
+    segment = 0
     private readonly game: Game
     private readonly now: () => number
     private readonly view: any
@@ -88,6 +91,7 @@ export class LivePlayer {
                 this.seg = null
                 this.problem = err instanceof Error ? err.message : String(err)
             }
+            this.segment++
             this.key = key
             this.end = null
             this.t = -Infinity
@@ -291,19 +295,44 @@ export interface WatchOptions {
     // Sent as a `status` event to every new stream and then every statusMs.
     status?: () => unknown
     statusMs?: number
+    // Sent as `map` when its seg changes (and to every new stream), `overlay` every overlayMs.
+    map?: () => { seg: number } | null
+    overlay?: () => unknown
+    overlayMs?: number
 }
 
-// Serves the page on / and the stream on /stream: `palette` once, then `frame`, `jev`, `status` and
-// published events.
+const MAP_EVENTS = new Set(["map", "overlay"])
+
+// Serves the page on /, the map alone on /map and the stream on /stream: `palette` once, then
+// `frame`, `jev`, `status`, `map`, `overlay` and published events. /stream?only=map carries just
+// the map events.
 export async function startWatch(game: Game, player: LivePlayer, opts: WatchOptions = {}): Promise<Watch> {
     const host = opts.host ?? "127.0.0.1"
     const clients = new Set<http.ServerResponse>()
+    const mapOnly = new WeakSet<http.ServerResponse>()
     const palette = JSON.stringify(rgbList(game.corridorArt.PALETTE))
     let last = ""
+    let mapSeg = -1
+    let lastOverlay = ""
     const send = (res: http.ServerResponse, event: string, data: string) => res.write(`event: ${event}\ndata: ${data}\n\n`)
     const publish = (event: string, data: unknown) => {
         const text = JSON.stringify(data)
-        for (const c of clients) send(c, event, text)
+        for (const c of clients) if (!mapOnly.has(c) || MAP_EVENTS.has(event)) send(c, event, text)
+    }
+    // A new attempt goes to every stream once; the overlay only when it changed.
+    const mapTick = () => {
+        const map = opts.map?.()
+        if (map && map.seg !== mapSeg) {
+            mapSeg = map.seg
+            lastOverlay = ""
+            publish("map", map)
+        }
+        const overlay = opts.overlay?.()
+        if (!overlay) return
+        const text = JSON.stringify(overlay)
+        if (text === lastOverlay) return
+        lastOverlay = text
+        for (const c of clients) send(c, "overlay", text)
     }
     player.onJev = (j) => publish("jev", j)
     const server = http.createServer((req, res) => {
@@ -311,14 +340,32 @@ export async function startWatch(game: Game, player: LivePlayer, opts: WatchOpti
         if (url.pathname === "/") {
             res.writeHead(200, { "content-type": "text/html; charset=utf-8" })
             res.end(PAGE)
+        } else if (url.pathname === "/map") {
+            res.writeHead(200, { "content-type": "text/html; charset=utf-8" })
+            res.end(MAP_PAGE)
         } else if (url.pathname === "/healthz") {
             res.writeHead(200, { "content-type": "text/plain" })
             res.end("ok\n")
         } else if (url.pathname === "/stream") {
             res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
-            send(res, "palette", palette)
+            res.flushHeaders()
+            const only = url.searchParams.get("only") === "map"
+            if (only) mapOnly.add(res)
+            if (!only) send(res, "palette", palette)
             last = ""
-            if (opts.status) send(res, "status", JSON.stringify(opts.status()))
+            if (opts.status && !only) send(res, "status", JSON.stringify(opts.status()))
+            // The world only moves when a frame is drawn, and no frames are drawn without streams.
+            if (clients.size === 0 && opts.overlay) player.frame()
+            const map = opts.map?.()
+            if (map) {
+                if (map.seg !== mapSeg) {
+                    mapSeg = map.seg
+                    publish("map", map)
+                }
+                send(res, "map", JSON.stringify(map))
+                const overlay = opts.overlay?.()
+                if (overlay) send(res, "overlay", JSON.stringify(overlay))
+            }
             clients.add(res)
             res.on("close", () => clients.delete(res))
         } else {
@@ -333,12 +380,15 @@ export async function startWatch(game: Game, player: LivePlayer, opts: WatchOpti
         const data = encodeFrame(frame.img)
         if (data === last) return
         last = data
-        for (const c of clients) send(c, "frame", data)
+        for (const c of clients) if (!mapOnly.has(c)) send(c, "frame", data)
     }, opts.frameMs ?? FRAME_MS)
     const status = opts.status
     const statusTimer = status ? setInterval(() => {
         if (clients.size > 0) publish("status", status())
     }, opts.statusMs ?? STATUS_MS) : null
+    const mapTimer = opts.map || opts.overlay ? setInterval(() => {
+        if (clients.size > 0) mapTick()
+    }, opts.overlayMs ?? OVERLAY_MS) : null
     await new Promise<void>((resolve, reject) => {
         server.once("error", reject)
         server.listen(opts.port ?? WATCH_PORT, host, () => resolve())
@@ -352,6 +402,7 @@ export async function startWatch(game: Game, player: LivePlayer, opts: WatchOpti
         close: () => {
             clearInterval(timer)
             if (statusTimer) clearInterval(statusTimer)
+            if (mapTimer) clearInterval(mapTimer)
             for (const c of clients) c.end()
             clients.clear()
             const closed = new Promise<void>((resolve) => server.close(() => resolve()))
@@ -369,7 +420,7 @@ const PAGE = `<!doctype html>
 <title>Corridor - AI live</title>
 <style>
   body { margin: 0; background: #111; color: #ddd; font: 13px/1.4 ui-monospace, Menlo, monospace; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; padding: 16px; }
-  canvas { flex: none; width: 640px; max-width: 100%; height: auto; aspect-ratio: 4 / 3; image-rendering: pixelated; background: #000; }
+  #screen { flex: none; width: 640px; max-width: 100%; height: auto; aspect-ratio: 4 / 3; image-rendering: pixelated; background: #000; }
   #side { flex: 1; min-width: 280px; height: 480px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
   h2 { flex: none; margin: 0; font-size: 11px; font-weight: normal; color: #888; text-transform: uppercase; letter-spacing: 1px; }
   #status { flex: none; }
@@ -389,6 +440,7 @@ const PAGE = `<!doctype html>
   #feed li.won { color: #5c5; }
   #feed li.lesson, #feed li.override { color: #fc0; }
   #feed li.heal, #feed li.watchdog { color: #6af; }
+${MAP_STYLE}
 </style>
 </head>
 <body>
@@ -401,7 +453,9 @@ const PAGE = `<!doctype html>
   <h2>Feed</h2>
   <ol id="feed"></ol>
 </div>
+${MAP_PANEL}
 <script>
+${MAP_SCRIPT}
   const ctx = document.getElementById("screen").getContext("2d")
   const image = ctx.createImageData(160, 120)
   const status = document.getElementById("status")
@@ -422,6 +476,7 @@ const PAGE = `<!doctype html>
   }
   const dash = (v, f) => (v === null || v === undefined ? "-" : f ? f(v) : String(v))
   const stream = new EventSource("/stream")
+  mapView(stream)
   stream.onopen = () => { status.textContent = "live"; status.className = "" }
   stream.onerror = () => { status.textContent = "no link to the bridge, retrying"; status.className = "off" }
   stream.addEventListener("palette", (e) => { palette = JSON.parse(e.data) })

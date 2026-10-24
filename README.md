@@ -122,7 +122,11 @@ snapshot to interpolate towards), and streams 25 frames per second to the page. 
 the level, health, weapon and kills, wins and deaths, Jev's decision count, latency and cost, how often
 the forced heal, the watchdog and a lesson stepped in, the console fps, the lessons (those of the
 current level first, the one in force highlighted) and a feed of Jev's decisions with deaths, wins,
-new lessons and overrides in colour. `NO SIGNAL` means no snapshot for 1.5 s. `--watch-port` changes the port;
+new lessons and overrides in colour. Below the picture, a separate top-down map of the level: walls,
+doors in their key colour (open, closed, locked), lava, the exit, items not taken yet, the player and
+where it faces, enemies in sight and those seen in the last 5 s (no others), fireballs in sight, and the
+bridge's goal with the path it follows, updated 4 times a second; `/map` shows the map alone.
+`NO SIGNAL` means no snapshot for 1.5 s. `--watch-port` changes the port;
 `--watch-host 0.0.0.0` opens it to the local network, for a phone. Works with `--sim` too.
 
 ### Lessons after a death
