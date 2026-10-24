@@ -16,7 +16,7 @@ namespace corridorArt {
         0x7a5a3a, // 10 brown light
         0x563f2a, // 11 brown
         0x36281c, // 12 brown dark
-        0x3e4250, // 13 ceiling slate
+        0x3a62c8, // 13 blue (keys, blue door)
         0x252832, // 14 ceiling dark
         0x0b0a0a, // 15 black
     ]
@@ -24,10 +24,12 @@ namespace corridorArt {
     // One step darker along the colour's own ramp; used to pre-shade textures by distance.
     export const DARKER = [0, 6, 3, 9, 5, 10, 7, 8, 9, 15, 11, 12, 15, 14, 15, 15]
 
+    // Ceiling uses 14 only, so slot 13 is free for blue.
+
     // [firstRow, lastRow, colour, ditherColour] for the 100-row viewport backdrop.
     export const BANDS = [
-        [0, 13, 13, 13],
-        [14, 15, 13, 14],
+        [0, 13, 14, 14],
+        [14, 15, 14, 14],
         [16, 37, 14, 14],
         [38, 39, 14, 15],
         [40, 52, 15, 15],
@@ -94,6 +96,58 @@ namespace corridorArt {
         "544ff44ff44ff445",
         "54ff44ff44ff44f5",
         "5555555555555555",
+    ]
+
+    // Door template: "x" is replaced with the door's stripe colour (yellow, red or blue).
+    export const DOOR = [
+        "8888888888888888",
+        "8777777777777778",
+        "8767777777777678",
+        "8777777777777778",
+        "8777777777777778",
+        "8xxxxxxxxxxxxxx8",
+        "8x9x9x9x9x9x9xx8",
+        "8xxxxxxxxxxxxxx8",
+        "8777777777777778",
+        "8777766666677778",
+        "8777769999677778",
+        "8777766666677778",
+        "8777777777777778",
+        "8767777777777678",
+        "8777777777777778",
+        "8888888888888888",
+    ]
+
+    // Exit while the boss lives: bars over the yellow door.
+    export const EXIT_BARS = [
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9999999999999999",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9999999999999999",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+        "9..9..9..9..9..9",
+    ]
+
+    // Template key sprite, "x" = key colour.
+    export const KEY = [
+        "........",
+        "..xxx...",
+        ".x...x..",
+        ".x...x..",
+        "..xxx...",
+        "...x....",
+        "...xx...",
+        "...xxx..",
     ]
 
     export const IMP_WALK_A = [
@@ -304,7 +358,7 @@ namespace corridorArt {
         ".88888888888888.",
     ]
 
-    export const GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ:!/-.>+"
+    export const GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ:!/-.>+%"
     // 3x5 glyphs, rows top to bottom, 3 bits per row.
     export const FONT = [
         "111101101101111", "010110010010111", "111001111100111", "111001111001111",
@@ -318,6 +372,6 @@ namespace corridorArt {
         "101101101101111", "101101101101010", "101101111111101", "101101010101101",
         "101101010010010", "111001010100111",
         "000010000010000", "010010010000010", "001001010100100", "000000111000000",
-        "000000000000010", "100010001010100", "000010111010000",
+        "000000000000010", "100010001010100", "000010111010000", "101001010100101",
     ]
 }

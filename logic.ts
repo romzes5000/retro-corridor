@@ -11,9 +11,25 @@ namespace corridor {
     export const TILE_STONE = 1
     export const TILE_BRICK = 2
     export const TILE_EXIT = 3
+    export const TILE_DOOR = 4
+    export const TILE_DOOR_RED = 5
+    export const TILE_DOOR_BLUE = 6
+    export const TILE_SECRET = 7
 
     export const ITEM_HEALTH = 0
     export const ITEM_AMMO = 1
+    export const ITEM_KEY_RED = 2
+    export const ITEM_KEY_BLUE = 3
+
+    export const KEY_RED = 1
+    export const KEY_BLUE = 2
+
+    export const DOOR_OPEN_MS = 400
+    export const DOOR_HOLD_MS = 3000
+    export const DOOR_PASS = 920
+    export const SECRET_MS = 1000
+    export const USE_REACH = 800
+    export const USE_COOLDOWN = 250
 
     export const PLAYER_RADIUS = 225
     export const MOVE_SPEED = 2900
@@ -60,25 +76,6 @@ namespace corridor {
     for (let c = 0; c < VIEW_W; c++) {
         CAMX.push(Math.idiv((2 * c + 1 - VIEW_W) * FP, VIEW_W))
     }
-
-    export const CAMPAIGN = [
-        "################",
-        "#S..#....H.....#",
-        "#...#.####.###.#",
-        "#.A.....E#...#.#",
-        "##.####.##.#.#.#",
-        "#...E.#....#E#.#",
-        "#.###.####.###.#",
-        "#.#H#.....E....#",
-        "#.#.#####.######",
-        "#.....B......A.#",
-        "####.BBB.####.##",
-        "#E...B...#H#...#",
-        "#.##.B.E.#.#.#.#",
-        "#.#..BBB.#...#.#",
-        "#.#...........HX",
-        "################",
-    ]
 
     export class Imp {
         x: number
@@ -158,7 +155,27 @@ namespace corridor {
         imps: Imp[]
         items: Item[]
         events: string[]
+        doors: Door[]
+        doorIndex: number[]
+        pushes: Push[]
+        keys: number
+        exitLocked: boolean
+        itemsTotal: number
+        itemsTaken: number
+        secrets: number
+        found: number
+        lockedCool: number
         constructor() {
+            this.doors = []
+            this.doorIndex = []
+            this.pushes = []
+            this.keys = 0
+            this.exitLocked = false
+            this.itemsTotal = 0
+            this.itemsTaken = 0
+            this.secrets = 0
+            this.found = 0
+            this.lockedCool = 0
             this.grid = []
             this.w = 0
             this.h = 0
@@ -216,7 +233,15 @@ namespace corridor {
         if (ch == "#") return TILE_STONE
         if (ch == "B") return TILE_BRICK
         if (ch == "X") return TILE_EXIT
+        if (ch == "|") return TILE_DOOR
+        if (ch == "R") return TILE_DOOR_RED
+        if (ch == "D") return TILE_DOOR_BLUE
+        if (ch == "P") return TILE_SECRET
         return TILE_FLOOR
+    }
+
+    export function isDoor(tile: number): boolean {
+        return tile >= TILE_DOOR && tile <= TILE_DOOR_BLUE
     }
 
     function center(cell: number): number {
@@ -245,9 +270,17 @@ namespace corridor {
                     world.items.push(new Item(center(c), center(r), ITEM_HEALTH))
                 } else if (ch == "A") {
                     world.items.push(new Item(center(c), center(r), ITEM_AMMO))
+                } else if (ch == "r") {
+                    world.items.push(new Item(center(c), center(r), ITEM_KEY_RED))
+                } else if (ch == "b") {
+                    world.items.push(new Item(center(c), center(r), ITEM_KEY_BLUE))
+                } else if (ch == "P") {
+                    world.secrets += 1
                 }
             }
         }
+        setupDoors(world)
+        world.itemsTotal = world.items.length
         world.total = world.imps.length
         world.ang = ang & (ANGLES - 1)
         return world
@@ -258,8 +291,16 @@ namespace corridor {
         return world.grid[cy * world.w + cx]
     }
 
+    // A cell stops bodies and sight unless it is floor or a door that is (almost) fully open.
+    export function blocks(world: World, cx: number, cy: number): boolean {
+        const tile = tileAt(world, cx, cy)
+        if (tile == TILE_FLOOR) return false
+        if (isDoor(tile)) return world.doors[world.doorIndex[cy * world.w + cx]].progress < DOOR_PASS
+        return true
+    }
+
     export function solidAt(world: World, x: number, y: number): boolean {
-        return tileAt(world, x >> 10, y >> 10) != TILE_FLOOR
+        return blocks(world, x >> 10, y >> 10)
     }
 
     // Square body of half-size r centred at (x, y) overlaps no wall.
@@ -294,6 +335,8 @@ namespace corridor {
         }
         let side = 0
         let tile = TILE_STONE
+        let doorDist = -1
+        let doorTex = 0
         for (let i = 0; i < MAX_STEPS; i++) {
             if (sdx < sdy) {
                 sdx += ddx
@@ -305,14 +348,29 @@ namespace corridor {
                 side = 1
             }
             tile = tileAt(world, mx, my)
-            if (tile != TILE_FLOOR) break
+            if (tile == TILE_FLOOR) continue
+            if (!isDoor(tile)) break
+            const door = world.doors[world.doorIndex[my * world.w + mx]]
+            if (door.vertical != (side == 0)) {
+                tile = TILE_STONE
+                break
+            }
+            // The door is a plane through the middle of its cell, slid sideways by `progress`.
+            const half = side == 0 ? sdx - (ddx >> 1) : sdy - (ddy >> 1)
+            if (half >= (side == 0 ? sdy : sdx)) continue
+            const frac = (side == 0 ? py + ((half * rdy) >> 10) : px + ((half * rdx) >> 10)) & (FP - 1)
+            if (frac < door.progress) continue
+            doorDist = half
+            doorTex = (frac - door.progress) >> 6
+            break
         }
-        let dist = side == 0 ? sdx - ddx : sdy - ddy
+        let dist = doorDist >= 0 ? doorDist : side == 0 ? sdx - ddx : sdy - ddy
         if (dist < 16) dist = 16
         let wall = side == 0 ? py + ((dist * rdy) >> 10) : px + ((dist * rdx) >> 10)
         let texX = (wall & (FP - 1)) >> 6
         if (side == 0 && rdx < 0) texX = 15 - texX
         if (side == 1 && rdy > 0) texX = 15 - texX
+        if (doorDist >= 0) texX = doorTex
         hit.dist = dist
         hit.side = side
         hit.tile = tile
@@ -392,7 +450,7 @@ namespace corridor {
         return false
     }
 
-    function emit(world: World, ev: string): void {
+    export function emit(world: World, ev: string): void {
         world.events.push(ev)
     }
 
@@ -407,7 +465,7 @@ namespace corridor {
                 world.x = nx
                 moved += Math.abs(mx)
             } else if (tileAt(world, probe >> 10, world.y >> 10) == TILE_EXIT) {
-                world.won = true
+                touchExit(world)
             }
         }
         if (my != 0) {
@@ -417,18 +475,37 @@ namespace corridor {
                 world.y = ny
                 moved += Math.abs(my)
             } else if (tileAt(world, world.x >> 10, probe >> 10) == TILE_EXIT) {
-                world.won = true
+                touchExit(world)
             }
         }
         return moved
     }
 
+    function touchExit(world: World): void {
+        if (!world.exitLocked) {
+            world.won = true
+            return
+        }
+        if (world.lockedCool <= 0) {
+            world.lockedCool = 1000
+            emit(world, "locked")
+        }
+    }
+
     function moveImp(world: World, imp: Imp, mx: number, my: number): void {
         const r = IMP_RADIUS
         const nx = imp.x + mx
-        if (fits(world, nx, imp.y, r) && distance(nx, imp.y, world.x, world.y) >= TOUCH) imp.x = nx
+        if (fits(world, nx, imp.y, r)) {
+            if (distance(nx, imp.y, world.x, world.y) >= TOUCH) imp.x = nx
+        } else {
+            nudgeDoor(world, imp.x + (mx > 0 ? r + 128 : -r - 128), imp.y)
+        }
         const ny = imp.y + my
-        if (fits(world, imp.x, ny, r) && distance(imp.x, ny, world.x, world.y) >= TOUCH) imp.y = ny
+        if (fits(world, imp.x, ny, r)) {
+            if (distance(imp.x, ny, world.x, world.y) >= TOUCH) imp.y = ny
+        } else {
+            nudgeDoor(world, imp.x, imp.y + (my > 0 ? r + 128 : -r - 128))
+        }
     }
 
     // Nearest live imp under the crosshair and in front of the wall, or -1.
@@ -532,12 +609,17 @@ namespace corridor {
             if (item.kind == ITEM_HEALTH) {
                 if (world.health >= 100) continue
                 world.health = Math.min(100, world.health + HEALTH_PICKUP)
-            } else {
+            } else if (item.kind == ITEM_AMMO) {
                 world.ammo += AMMO_PICKUP
+            } else if (item.kind == ITEM_KEY_RED) {
+                world.keys |= KEY_RED
+            } else if (item.kind == ITEM_KEY_BLUE) {
+                world.keys |= KEY_BLUE
             }
             item.taken = true
+            world.itemsTaken += 1
             world.score += 10
-            emit(world, "pickup")
+            emit(world, item.kind >= ITEM_KEY_RED && item.kind <= ITEM_KEY_BLUE ? "key" : "pickup")
         }
     }
 
@@ -548,6 +630,8 @@ namespace corridor {
         if (dt < 0) dt = 0
         world.time += dt
         if (world.fireCool > 0) world.fireCool -= dt
+        if (world.lockedCool > 0) world.lockedCool -= dt
+        updateDoors(world, dt)
 
         if (input.turn != 0) {
             world.turnHold += dt
@@ -573,7 +657,10 @@ namespace corridor {
             }
         }
 
-        if (input.fire) fire(world)
+        if (input.fire && world.fireCool <= 0) {
+            if (useAhead(world)) world.fireCool = USE_COOLDOWN
+            else fire(world)
+        }
         for (const imp of world.imps) {
             if (!imp.dead) thinkImp(world, imp, dt)
             if (world.lost) return
@@ -582,6 +669,14 @@ namespace corridor {
     }
 
     export const MAP_TAP_MS = 300
+    export const DIR_UP = 1
+    export const DIR_DOWN = 2
+    export const DIR_LEFT = 4
+    export const DIR_RIGHT = 8
+
+    export function pct(part: number, total: number): number {
+        return total <= 0 ? 100 : Math.idiv(part * 100, total)
+    }
 
     export class Pad {
         aWas: boolean
@@ -591,7 +686,11 @@ namespace corridor {
         bStrafed: boolean
         tapA: boolean
         tapB: boolean
+        dirsWas: number
+        tapDirs: number
         constructor() {
+            this.dirsWas = 0
+            this.tapDirs = 0
             this.aWas = false
             this.aLatch = true
             this.bWas = false
@@ -627,6 +726,9 @@ namespace corridor {
         }
         pad.bWas = b
         input.fwd = (up ? 1 : 0) - (down ? 1 : 0)
+        const dirs = (up ? DIR_UP : 0) | (down ? DIR_DOWN : 0) | (left ? DIR_LEFT : 0) | (right ? DIR_RIGHT : 0)
+        pad.tapDirs = dirs & ~pad.dirsWas
+        pad.dirsWas = dirs
     }
 
     // Facing as a compass letter for the HUD.

@@ -33,7 +33,16 @@ function centre(api: LogicApi, c: number): number {
     return c * api.FP + api.FP / 2
 }
 
-export function findPath(api: LogicApi, world: World, from: Cell, to: Cell): Cell[] {
+// Walkable for planning: floor, plain doors and keyed doors whose key is in `keys`.
+export function passable(api: LogicApi, world: World, cx: number, cy: number, keys: number): boolean {
+    const tile = api.tileAt(world, cx, cy)
+    if (tile === api.TILE_FLOOR) return true
+    if (!api.isDoor(tile)) return false
+    const door = api.doorAt(world, cx, cy)
+    return door.key === 0 || (keys & door.key) !== 0
+}
+
+export function findPath(api: LogicApi, world: World, from: Cell, to: Cell, keys: number = world.keys): Cell[] {
     const key = (c: Cell) => c[1] * world.w + c[0]
     const prev = new Map<number, number>()
     const queue: Cell[] = [from]
@@ -43,7 +52,7 @@ export function findPath(api: LogicApi, world: World, from: Cell, to: Cell): Cel
         if (cur[0] === to[0] && cur[1] === to[1]) break
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
             const next: Cell = [cur[0] + dx, cur[1] + dy]
-            if (api.tileAt(world, next[0], next[1]) !== api.TILE_FLOOR || prev.has(key(next))) continue
+            if (!passable(api, world, next[0], next[1], keys) || prev.has(key(next))) continue
             prev.set(key(next), key(cur))
             queue.push(next)
         }
@@ -70,6 +79,63 @@ export function corners(path: Cell[]): Cell[] {
     return out
 }
 
+export interface ExitSpot {
+    cell: Cell
+    ang: number
+}
+
+// Floor cell next to the exit tile and the heading that walks into it.
+export function exitSpot(api: LogicApi, world: World): ExitSpot {
+    for (let cy = 0; cy < world.h; cy++) {
+        for (let cx = 0; cx < world.w; cx++) {
+            if (api.tileAt(world, cx, cy) !== api.TILE_EXIT) continue
+            const sides: Array<[number, number, number]> = [[-1, 0, 0], [1, 0, 512], [0, -1, 256], [0, 1, 768]]
+            for (const [dx, dy, ang] of sides) {
+                if (api.tileAt(world, cx + dx, cy + dy) === api.TILE_FLOOR) return { cell: [cx + dx, cy + dy], ang }
+            }
+        }
+    }
+    throw new Error("no exit")
+}
+
+const KEY_ITEMS: Record<number, number> = { 2: 1, 3: 2 }
+
+// Waypoints that solve the level: fetch each key the route needs, then the exit. Null if stuck.
+export function planRoute(api: LogicApi, world: World, from: Cell, exit: Cell): Cell[] | null {
+    const out: Cell[] = []
+    let keys = world.keys
+    let at = from
+    const taken = new Set<number>()
+    for (let guard = 0; guard < 8; guard++) {
+        if (findPath(api, world, at, exit, keys).length > 0 || (at[0] === exit[0] && at[1] === exit[1])) {
+            out.push(exit)
+            return out
+        }
+        let best: Cell | null = null
+        let bestLen = Infinity
+        let bestKey = 0
+        let bestIdx = -1
+        world.items.forEach((item, i) => {
+            const bit = KEY_ITEMS[item.kind]
+            if (!bit || item.taken || taken.has(i) || (keys & bit) !== 0) return
+            const cell: Cell = [item.x >> 10, item.y >> 10]
+            const len = findPath(api, world, at, cell, keys).length
+            if (len > 0 && len < bestLen) {
+                best = cell
+                bestLen = len
+                bestKey = bit
+                bestIdx = i
+            }
+        })
+        if (!best) return null
+        taken.add(bestIdx)
+        out.push(best)
+        keys |= bestKey
+        at = best
+    }
+    return null
+}
+
 export class Pilot {
     readonly api: LogicApi
     readonly tasks: Task[] = []
@@ -85,9 +151,17 @@ export class Pilot {
         return this.tasks.length === 0
     }
 
-    route(world: World, to: Cell): void {
-        const from: Cell = [world.x >> 10, world.y >> 10]
-        for (const cell of corners(findPath(this.api, world, from, to))) this.tasks.push({ kind: "goto", cell })
+    route(world: World, to: Cell, from: Cell = [world.x >> 10, world.y >> 10], keys: number = world.keys): void {
+        for (const cell of corners(findPath(this.api, world, from, to, keys))) this.tasks.push({ kind: "goto", cell })
+    }
+
+    // Press A on a closed door straight ahead; while it slides open just wait instead of shooting.
+    private doorAhead(world: World, input: Input): void {
+        const api = this.api
+        const ax = world.x + ((api.cos(world.ang) * api.USE_REACH) >> 10)
+        const ay = world.y + ((api.sin(world.ang) * api.USE_REACH) >> 10)
+        const door = api.doorAt(world, ax >> 10, ay >> 10)
+        if (door && (door.state === api.DOOR_CLOSED || door.state === api.DOOR_CLOSING)) input.fire = true
     }
 
     private aim(world: World, input: Input, ang: number, tolerance: number): boolean {
@@ -118,6 +192,7 @@ export class Pilot {
                 const ang = angleTo(api, world, tx, ty)
                 this.aim(world, input, ang, AIM)
                 if (Math.abs(angleDiff(api, world.ang, ang)) < STEER) input.fwd = 1
+                this.doorAhead(world, input)
                 return input
             }
             case "face":
@@ -165,20 +240,30 @@ export class Pilot {
     }
 }
 
-// Campaign-solving strategy for feature tests: walk to the exit, stop to shoot any imp that has
-// spotted the player and is close enough to matter.
-export function fightingPilot(api: LogicApi, world: World, exit: Cell, exitAng: number): (dt: number) => Input {
+// Level-solving strategy for feature tests and demos: fetch the keys the route needs, walk to the
+// exit, and stop to shoot any imp that has spotted the player and is close enough to matter.
+export function fightingPilot(api: LogicApi, world: World, exit?: Cell, exitAng?: number): (dt: number) => Input {
+    const spot = exit ? { cell: exit, ang: exitAng ?? 0 } : exitSpot(api, world)
     const walker = new Pilot(api)
     const plan = () => {
-        walker.route(world, exit)
-        walker.tasks.push({ kind: "face", ang: exitAng }, { kind: "push", ms: 3000 })
+        walker.tasks.length = 0
+        let at: Cell = [world.x >> 10, world.y >> 10]
+        let keys = world.keys
+        const points = planRoute(api, world, at, spot.cell) ?? [spot.cell]
+        for (const p of points) {
+            walker.route(world, p, at, keys)
+            const item = world.items.find((it) => !it.taken && it.x >> 10 === p[0] && it.y >> 10 === p[1])
+            if (item && KEY_ITEMS[item.kind]) keys |= KEY_ITEMS[item.kind]
+            at = p
+        }
+        walker.tasks.push({ kind: "face", ang: spot.ang }, { kind: "push", ms: 3000 })
     }
     plan()
     let fighter: Pilot | null = null
     return (dt: number) => {
         if (fighter && fighter.done) {
             fighter = null
-            walker.tasks.length = 0
+            plan()
         }
         if (!fighter) {
             const threat = world.imps.findIndex((imp) => !imp.dead && imp.sees

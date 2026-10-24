@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { loadLogic, type Input, type World } from "./load-logic.ts"
-import { Pilot, fightingPilot, findPath, type Cell } from "./demo/pilot.ts"
+import { Pilot, exitSpot, fightingPilot, findPath, planRoute, type Cell } from "./demo/pilot.ts"
 
 const api = loadLogic()
 const { FP, CAMPAIGN, createWorld, update } = api
@@ -78,4 +78,38 @@ test("стрейф с B сдвигает вбок без поворота", () =
     assert.equal(world.ang, 0)
     assert.equal(world.x, 2 * FP + FP / 2)
     assert.ok(world.y > 2 * FP + FP / 2 + 300)
+})
+
+test("каждый уровень решается: ключ лежит до своей двери, выход заперт без ключей", () => {
+    for (const level of api.LEVELS) {
+        const world = createWorld(level.map, level.ang)
+        const start: Cell = [world.x >> 10, world.y >> 10]
+        const spot = exitSpot(api, world)
+        assert.equal(api.tileAt(world, spot.cell[0] + 1, spot.cell[1]), api.TILE_EXIT, level.name)
+        const route = planRoute(api, world, start, spot.cell)
+        assert.ok(route, `${level.name}: маршрут есть`)
+        assert.ok(level.map.length <= 24 && level.map[0].length <= 24, `${level.name}: до 24x24`)
+        if (level.map.join("").includes("R")) {
+            assert.equal(findPath(api, world, start, spot.cell, 0).length, 0, `${level.name}: без ключей не пройти`)
+            assert.ok(route!.length > 1, `${level.name}: маршрут заходит за ключами`)
+        }
+    }
+})
+
+test("пилот проходит кампанию из трёх уровней подряд, запас переносится", () => {
+    const session = api.startSession(api.RUN_CAMPAIGN, api.DIFF_NORMAL)
+    const seen = new Set<string>()
+    let more = true
+    while (more) {
+        const world = api.enterLevel(session)
+        assert.equal(world.health, session.entryHealth)
+        const events = play(world, fightingPilot(api, world), 300000)
+        events.forEach((e) => seen.add(e))
+        assert.equal(world.lost, false, `${api.levelName(session)}: погиб, здоровье ${world.health}`)
+        assert.equal(world.won, true, `${api.levelName(session)}: не дошёл до выхода за ${world.time} мс`)
+        more = api.completeLevel(session, world)
+    }
+    assert.equal(session.level, 3)
+    assert.ok(seen.has("key") && seen.has("door"), `события ${[...seen]}`)
+    assert.ok(session.kills >= 3)
 })
