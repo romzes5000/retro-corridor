@@ -109,7 +109,7 @@ function benchLine(b: LevelBench): string {
         `${b.name}: won ${b.wins}/${b.runs}, ${(b.seconds / Math.max(1, b.runs)).toFixed(1)} s per run, hp at end ${hp}`,
         `pickups ${JSON.stringify(b.stats.pickups)}, picks ${JSON.stringify(b.stats.picks)}`,
         `idle ${share}% (longest ${b.longestIdleMs} ms), damage bite ${b.damage.bite} shot ${b.damage.shot} lava ${b.damage.lava}`,
-        `watchdog ${b.stats.watchdog}, predicted ${b.stats.predicted}/${b.stats.decisions}`,
+        `watchdog ${b.stats.watchdog}, forced heal ${b.stats.forcedHeal}, predicted ${b.stats.predicted}/${b.stats.decisions}`,
         summary(b.stats, b.seconds),
     ].join("\n  ")
 }

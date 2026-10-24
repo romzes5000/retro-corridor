@@ -37,6 +37,17 @@ const SHORT_CELLS = 1
 const BALL_SOON_MS = 700
 export const BACKPEDAL = 1
 
+// Below this health a reachable medkit beats any pick that is not fighting or dodging: Jev kept
+// walking past one at 20-30 HP.
+export const MUST_HEAL_HP = 40
+const CALM: readonly Action[] = ["advance", "wait", "open", "ammo", "weapon"]
+
+export function mustHeal(world: World, sit: Situation, pick: Action): boolean {
+    if (world.health >= MUST_HEAL_HP || !sit.medkit || sit.medkit.steps === 0) return false
+    if (CALM.includes(pick)) return true
+    return pick === "retreat" && sit.enemies.length === 0 && sit.fireballs.length === 0
+}
+
 function make(action: Action, cmd: number, a = 0, b = 0, route: Cell[] = []): Decision {
     return { action, cmd, a, b, label: LABELS[action], route }
 }

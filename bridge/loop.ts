@@ -1,7 +1,7 @@
 // The bridge loop: console snapshot -> shadow world -> facts -> Jev -> one command in the mailbox.
 // One Jev request in flight; whatever snapshot is newest when it returns gets the next request.
 import type { LogicApi, World } from "../load-logic.ts"
-import { decide, type Decision } from "./decide.ts"
+import { decide, mustHeal, type Decision } from "./decide.ts"
 import type { Action, JevAnswer, JevFn } from "./jev.ts"
 import { boxWrites, encodeBox, nextSeq, type BoxWrite } from "./mailbox.ts"
 import { Memory } from "./memory.ts"
@@ -40,6 +40,8 @@ export interface Stats {
     skipped: number
     // Times the watchdog replaced Jev's pick to get a stalled player moving.
     watchdog: number
+    // Times a calm pick at low health was replaced by heal.
+    forcedHeal: number
     // Facts described the predicted moment rather than the snapshot.
     predicted: number
     // Jev picks by action, and items the player picked up by kind (seen in the shadow world).
@@ -48,11 +50,11 @@ export interface Stats {
 }
 
 export function emptyStats(): Stats {
-    return { decisions: 0, errors: 0, latencies: [], cost: 0, won: 0, dead: 0, stale: 0, skipped: 0, watchdog: 0, predicted: 0, picks: {}, pickups: {} }
+    return { decisions: 0, errors: 0, latencies: [], cost: 0, won: 0, dead: 0, stale: 0, skipped: 0, watchdog: 0, forcedHeal: 0, predicted: 0, picks: {}, pickups: {} }
 }
 
 export function addStats(total: Stats, s: Stats): void {
-    for (const k of ["decisions", "errors", "cost", "won", "dead", "stale", "skipped", "watchdog", "predicted"] as const) total[k] += s[k]
+    for (const k of ["decisions", "errors", "cost", "won", "dead", "stale", "skipped", "watchdog", "forcedHeal", "predicted"] as const) total[k] += s[k]
     total.latencies.push(...s.latencies)
     for (const [k, v] of Object.entries(s.picks)) total.picks[k] = (total.picks[k] ?? 0) + v
     for (const [k, v] of Object.entries(s.pickups)) total.pickups[k] = (total.pickups[k] ?? 0) + v
@@ -191,7 +193,11 @@ export class Bridge {
         this.steps = view.sit.steps
         const watchdog = this.watchdog(snap, stalledMs)
         this.inFlight = this.ask(snap, state, (answer) => {
-            const pick: Action = watchdog ? "advance" : answer.action
+            let pick: Action = watchdog ? "advance" : answer.action
+            if (mustHeal(world, sit, pick)) {
+                pick = "heal"
+                this.stats.forcedHeal++
+            }
             return decide(this.api, world, sit, pick, answer.danger)
         }, sit.at)
             .finally(() => {

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { loadLogic, type World } from "../load-logic.ts"
-import { decide } from "./decide.ts"
+import { decide, MUST_HEAL_HP, mustHeal } from "./decide.ts"
 import { fakeJev, fakePick } from "./fake-jev.ts"
 import { ACTION_QUESTIONS, ACTIONS, parseAnswer, type Action, type JevAnswer, type JevFn } from "./jev.ts"
 import { Bridge, type LogRecord } from "./loop.ts"
@@ -103,6 +103,47 @@ test("решения: weapon ведёт к дробовику, без него �
     assert.equal(back.cmd, CMD.goto, "шар через 500 мс — уходить, а не пятиться под ним")
     world.shots = []
     assert.deepEqual([decide(api, world, situate(api, world), "retreat").cmd, decide(api, world, situate(api, world), "retreat").b], [CMD.attack, 1])
+})
+
+test("мало здоровья: мирный выбор Jev заменяется походом к аптечке, бой и уворот — нет", () => {
+    const map = ["#########", "#S.....X#", "#.#######", "#H#######", "#########"]
+    const world = api.createWorld(map, 0)
+    world.health = 30
+    const sit = situate(api, world)
+    for (const pick of ["advance", "wait", "open", "ammo", "weapon", "retreat"] as Action[]) assert.equal(mustHeal(world, sit, pick), true, pick)
+    for (const pick of ["attack", "dodge_left", "dodge_right", "heal"] as Action[]) assert.equal(mustHeal(world, sit, pick), false, pick)
+    const d = decide(api, world, sit, "heal")
+    assert.deepEqual([d.action, d.cmd, d.a, d.b], ["heal", CMD.goto, 1, 3])
+
+    world.health = MUST_HEAL_HP
+    assert.equal(mustHeal(world, situate(api, world), "advance"), false, "40 HP — решает Jev")
+    world.health = 30
+    world.enemies.push(new api.Enemy(api.ENEMY_IMP, world.x + 900, world.y))
+    assert.equal(mustHeal(world, situate(api, world), "retreat"), false, "есть от кого отступать")
+    assert.equal(mustHeal(world, situate(api, world), "advance"), true)
+    const dry = api.createWorld(["#########", "#S.....X#", "#########"], 0)
+    dry.health = 10
+    assert.equal(mustHeal(dry, situate(api, dry), "advance"), false, "аптечки нет")
+    const onIt = api.createWorld(["#########", "#H.....X#", "#########"], 0)
+    onIt.x = centre(1)
+    onIt.y = centre(1)
+    onIt.health = 10
+    assert.equal(mustHeal(onIt, situate(api, onIt), "advance"), false, "уже стоит на ней")
+})
+
+test("мост: при 30 HP ответ advance уходит на приставку как HEAL и считается в forcedHeal", async () => {
+    const { world, link } = hangar(12)
+    world.health = 30
+    assert.ok(situate(api, world).medkit, "на уровне есть аптечка")
+    const transport = new FakeTransport()
+    const log: LogRecord[] = []
+    const bridge = new Bridge(api, transport, always("advance"), (r) => log.push(r), () => link.clock, 1)
+    transport.send(api.aiSnapshot(link, world, api.DIFF_NORMAL) as string[])
+    await bridge.idle()
+    const rec = log.find((r) => r.kind === "decision")
+    assert.deepEqual([rec?.answer?.action, rec?.decision?.action, rec?.decision?.label], ["advance", "heal", "HEAL"])
+    assert.equal(bridge.stats.forcedHeal, 1)
+    assert.equal(bridge.stats.picks.advance, 1, "в статистике — что ответил Jev")
 })
 
 test("решения: при danger от 0.6 GOTO шагает на 1 клетку, иначе маршрут до 6 клеток", () => {
@@ -391,6 +432,15 @@ test("сценарий: HANGAR с 30 HP — аптечка подобрана в
     const bridge = await drive(sim, fakeJev, 500, 120000)
     assert.ok((bridge.stats.picks.heal ?? 0) > 0)
     assert.ok((bridge.stats.pickups.medkit ?? 0) >= 1)
+})
+
+test("сценарий: HANGAR с 30 HP, Jev всегда отвечает advance — мост всё равно ведёт к аптечке", async () => {
+    const sim = new SimConsole(levelIndex(api, "HANGAR"), api.DIFF_NORMAL, 5)
+    sim.world.health = 30
+    const bridge = await drive(sim, always("advance"), 500, 120000)
+    assert.ok(bridge.stats.forcedHeal > 0)
+    assert.ok((bridge.stats.pickups.medkit ?? 0) >= 1, JSON.stringify(bridge.stats.pickups))
+    assert.ok(sim.world.health > 30)
 })
 
 test("сценарий: HANGAR NORMAL с задержкой Jev 500 мс — простой вне боя меньше 15%, пауз дольше 600 мс нет", async () => {
