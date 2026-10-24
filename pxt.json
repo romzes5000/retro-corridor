@@ -8,6 +8,7 @@
     },
     "files": [
         "art.ts",
+        "art-enemies.ts",
         "logic.ts",
         "doors.ts",
         "enemies.ts",

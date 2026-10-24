@@ -236,7 +236,7 @@ function spriteBox(img: FakeImage, base: FakeImage): { colours: Set<number>; top
     return { colours, top }
 }
 
-test("враги различаются: стрелок серый, рыцарь бурый, босс выше беса", () => {
+test("враги различаются: бес красный, стрелок рыже-бурый, рыцарь в сером доспехе, босс выше и шире беса", () => {
     const row = (ch: string) => c.createWorld(["#########", "#S...%..#", "#########"].map((r) => r.replace("%", ch)), 0)
     const still = (w: World) => { for (const e of w.enemies) e.awake = true; return w }
     const empty = frame(row("."), (v) => { v.mode = r.MODE_TITLE + 99 })
@@ -246,10 +246,36 @@ test("враги различаются: стрелок серый, рыцарь
     const knight = look("K")
     const boss = look("Z")
     assert.ok(imp.colours.has(2) || imp.colours.has(3), "бес красный")
-    assert.equal(shooter.colours.has(2) || shooter.colours.has(3), false, "стрелок не красный")
-    assert.ok(shooter.colours.has(6) || shooter.colours.has(7), `стрелок ${[...shooter.colours]}`)
-    assert.ok(knight.colours.has(10) || knight.colours.has(11), `рыцарь ${[...knight.colours]}`)
+    assert.equal(shooter.colours.has(2) || shooter.colours.has(3), false, `стрелок не красный: ${[...shooter.colours]}`)
+    assert.ok(shooter.colours.has(5) || shooter.colours.has(10) || shooter.colours.has(11), `стрелок ${[...shooter.colours]}`)
+    assert.ok(knight.colours.has(6) || knight.colours.has(7) || knight.colours.has(8), `рыцарь ${[...knight.colours]}`)
     assert.ok(boss.top < imp.top - 5, `босс ${boss.top}, бес ${imp.top}`)
+    const sprites = art.ENEMY_ART as string[][][]
+    assert.deepEqual(Array.from(sprites, (frames) => frames[0][0].length), [16, 16, 16, 24])
+})
+
+test("кадр боли со своего листа отличается от ходьбы", () => {
+    const world = c.createWorld(["#######", "#S..E.#", "#######"], 0)
+    const enemy = world.enemies[0]
+    const shot = () => frame(world, (v) => { v.mode = r.MODE_TITLE + 99 }).pixels.join(",")
+    const walking = shot()
+    enemy.hurt = 100
+    const hurt = shot()
+    assert.notEqual(hurt, walking)
+    assert.equal((art.ENEMY_ART as string[][][])[0].length, 8, "восемь кадров на вид")
+})
+
+test("огненный шар анимируется двумя кадрами по времени", () => {
+    const world = c.createWorld(["#########", "#S......#", "#########"], 0)
+    world.shots.push(new c.Shot(4 * 1024, 1024 + 512, -3000, 0))
+    const shot = () => frame(world, (v) => { v.mode = r.MODE_TITLE + 99 }).pixels.join(",")
+    world.time = 0
+    const a = shot()
+    world.time = 128
+    const b = shot()
+    world.time = 256
+    assert.notEqual(a, b)
+    assert.equal(shot(), a, "через два шага — снова первый кадр")
 })
 
 test("огненный шар виден в кадре на уровне груди", () => {
