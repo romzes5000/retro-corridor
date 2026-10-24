@@ -51,6 +51,12 @@ namespace corridor {
     export const SOUND_NEAR = 3 * 1024
     export const SOUND_FAR = 7 * 1024
 
+    // Per-cell light: extra darkening steps 0..3, or LIGHT_FLICKER for a failing lamp.
+    export const LIGHT_FLICKER = 4
+    export const LAVA_DAMAGE = 5
+    export const LAVA_TICK_MS = 1000
+    export const LAVA_FIRST_MS = 200
+
     export const DECALS_MAX = 24
     export const DECAL_BLOOD = 0
     export const DECAL_SCORCH = 1
@@ -237,7 +243,13 @@ namespace corridor {
         decalNext: number
         difficulty: number
         rng: Rng
+        light: number[]
+        lava: number[]
+        lavaMs: number
         constructor() {
+            this.light = []
+            this.lava = []
+            this.lavaMs = LAVA_TICK_MS - LAVA_FIRST_MS
             this.eventDist = []
             this.decals = []
             this.decalNext = 0
@@ -286,7 +298,13 @@ namespace corridor {
         texX: number
         cellX: number
         cellY: number
+        rdx: number
+        rdy: number
+        light: number
         constructor() {
+            this.rdx = 0
+            this.rdy = 0
+            this.light = 0
             this.dist = 0
             this.side = 0
             this.tile = 0
@@ -341,6 +359,8 @@ namespace corridor {
             for (let c = 0; c < world.w; c++) {
                 const ch = c < row.length ? row.charAt(c) : "#"
                 world.grid.push(tileOf(ch))
+                world.light.push(0)
+                world.lava.push(ch == "L" ? 1 : 0)
                 if (ch == "S") {
                     world.x = center(c)
                     world.y = center(r)
@@ -368,6 +388,30 @@ namespace corridor {
         world.total = world.enemies.length
         world.ang = ang & (ANGLES - 1)
         return world
+    }
+
+    // Light layer as rectangles: flat [x0, y0, x1, y1, level] tuples, inclusive bounds.
+    export function setLights(world: World, rects: number[]): void {
+        for (let i = 0; i + 4 < rects.length; i += 5) {
+            for (let cy = Math.max(0, rects[i + 1]); cy <= Math.min(world.h - 1, rects[i + 3]); cy++) {
+                for (let cx = Math.max(0, rects[i]); cx <= Math.min(world.w - 1, rects[i + 2]); cx++) {
+                    world.light[cy * world.w + cx] = rects[i + 4]
+                }
+            }
+        }
+    }
+
+    // Darkening steps for a cell right now; flickering cells blink on a per-cell rhythm.
+    export function lightAt(world: World, cx: number, cy: number): number {
+        if (cx < 0 || cy < 0 || cx >= world.w || cy >= world.h) return 0
+        const base = world.light[cy * world.w + cx]
+        if (base != LIGHT_FLICKER) return base
+        return ((world.time >> 7) * 13 + cx * 7 + cy * 11) % 9 < 3 ? 3 : 0
+    }
+
+    export function lavaAt(world: World, cx: number, cy: number): boolean {
+        if (cx < 0 || cy < 0 || cx >= world.w || cy >= world.h) return false
+        return world.lava[cy * world.w + cx] == 1
     }
 
     export function tileAt(world: World, cx: number, cy: number): number {
@@ -461,6 +505,10 @@ namespace corridor {
         hit.texX = texX
         hit.cellX = mx
         hit.cellY = my
+        hit.rdx = rdx
+        hit.rdy = rdy
+        if (doorDist >= 0) hit.light = lightAt(world, mx, my)
+        else hit.light = side == 0 ? lightAt(world, mx - stepX, my) : lightAt(world, mx, my - stepY)
     }
 
     export function castColumn(world: World, col: number, hit: Hit): void {
@@ -681,6 +729,19 @@ namespace corridor {
         }
     }
 
+    // Lava: first burn LAVA_FIRST_MS after stepping in, then LAVA_DAMAGE every LAVA_TICK_MS.
+    function burn(world: World, dt: number): void {
+        if (!lavaAt(world, world.x >> 10, world.y >> 10)) {
+            world.lavaMs = LAVA_TICK_MS - LAVA_FIRST_MS
+            return
+        }
+        world.lavaMs += dt
+        while (world.lavaMs >= LAVA_TICK_MS && !world.lost) {
+            world.lavaMs -= LAVA_TICK_MS
+            hurtPlayer(world, LAVA_DAMAGE)
+        }
+    }
+
     function pickUp(world: World): void {
         for (const item of world.items) {
             if (item.taken) continue
@@ -756,6 +817,8 @@ namespace corridor {
             if (world.lost) return
         }
         updateShots(world, dt)
+        if (world.lost) return
+        burn(world, dt)
         if (world.lost) return
         pickUp(world)
     }

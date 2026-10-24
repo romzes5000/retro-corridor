@@ -98,6 +98,46 @@ namespace corridorArt {
         "5555555555555555",
     ]
 
+    // Floor tiles, 16x16 texels per map cell.
+    export const FLOOR = [
+        "abbbbbbcabbbbbbc",
+        "bbbbabbcbbbbbbbc",
+        "bbbbbbbcbbbabbbc",
+        "bbabbbbcbbbbbbbc",
+        "bbbbbbbcbbbbbabc",
+        "bbbbbbbcbabbbbbc",
+        "bbbbbabcbbbbbbbc",
+        "cccccccccccccccc",
+        "abbbbbbcabbbbbbc",
+        "bbbabbbcbbbbabbc",
+        "bbbbbbbcbbbbbbbc",
+        "bbbbbbbcbabbbbbc",
+        "babbbbbcbbbbbbbc",
+        "bbbbbbbcbbbbbbbc",
+        "bbbbbabcbbbabbbc",
+        "cccccccccccccccc",
+    ]
+
+    // Lava, scrolled diagonally over time by the floor caster.
+    export const LAVA = [
+        "5552222255522222",
+        "5422222554422223",
+        "4222225542222233",
+        "2222255422222333",
+        "2222554222223332",
+        "2225542222233322",
+        "2255422222333222",
+        "2554222223332225",
+        "5542222233322255",
+        "5422222333222554",
+        "4222223332225542",
+        "2222233322255422",
+        "2222333222554222",
+        "2223332225542222",
+        "2233322255422222",
+        "2333222554222225",
+    ]
+
     // Door template: "x" is replaced with the door's stripe colour (yellow, red or blue).
     export const DOOR = [
         "8888888888888888",

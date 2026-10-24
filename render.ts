@@ -41,6 +41,7 @@ namespace corridorRender {
         frames: number
         acc: number
         colStep: number
+        quality: number
         slowFor: number
         menu: corridor.Menu
         session: corridor.Session
@@ -69,18 +70,29 @@ namespace corridorRender {
             this.frames = 0
             this.acc = 0
             this.colStep = 1
+            this.quality = QUALITY_FULL
             this.slowFor = 0
         }
     }
 
-    export const SLOW_FPS = 15
+    // Quality ladder: textured floor per pixel, floor in 2x2 blocks, flat floor bands (lava still
+    // drawn in 4x4 blocks so it stays visible), then also 80 rays (2-pixel wall columns).
+    export const QUALITY_FULL = 0
+    export const QUALITY_HALF = 1
+    export const QUALITY_BANDS = 2
+    export const QUALITY_LOW = 3
+    export const SLOW_FPS = 20
     export const SLOW_MS = 3000
 
-    // Drops to 80 rays (2-pixel columns) once the measured FPS stays under SLOW_FPS for SLOW_MS.
+    // One rung down each time the measured FPS stays under SLOW_FPS for SLOW_MS; never back up.
     export function adapt(view: View, dt: number): void {
-        if (view.colStep > 1 || view.fps == 0) return
+        if (view.quality >= QUALITY_LOW || view.fps == 0) return
         view.slowFor = view.fps < SLOW_FPS ? view.slowFor + dt : 0
-        if (view.slowFor > SLOW_MS) view.colStep = 2
+        if (view.slowFor > SLOW_MS) {
+            view.quality += 1
+            view.slowFor = 0
+        }
+        view.colStep = view.quality >= QUALITY_LOW ? 2 : 1
     }
 
     let walls: Image[][] = []
@@ -98,6 +110,15 @@ namespace corridorRender {
     let hud: Image = null
     let hudKey = ""
     const zbuf: number[] = []
+    const cRdx: number[] = []
+    const cRdy: number[] = []
+    const cBottom: number[] = []
+    const lit: number[] = []
+    const ROWDIST: number[] = []
+    // Rows closer to the horizon than this (floor beyond ~8 cells) keep the dark backdrop band.
+    const FLOOR_MIN_R = 6
+    let floorTex: number[][] = []
+    let lavaTex: number[] = []
     const order: number[] = []
     const depths: number[] = []
     const hit = new corridor.Hit()
@@ -185,6 +206,12 @@ namespace corridorRender {
         return out
     }
 
+    function texels(img: Image): number[] {
+        const out: number[] = []
+        for (let i = 0; i < 256; i++) out.push(img.getPixel(i & 15, i >> 4))
+        return out
+    }
+
     function shades(src: Image, count: number): Image[] {
         const out: Image[] = [src]
         for (let s = 1; s < count; s++) out.push(darken(src, s))
@@ -245,7 +272,17 @@ namespace corridorRender {
         muzzle = decode(corridorArt.FLASH)
         backdrop = buildBackdrop()
         hud = image.create(W, 20)
-        for (let i = 0; i < W; i++) zbuf.push(0)
+        for (let i = 0; i < W; i++) {
+            zbuf.push(0)
+            cRdx.push(0)
+            cRdy.push(0)
+            cBottom.push(0)
+        }
+        for (let r = 0; r <= 2 * VH; r++) ROWDIST.push(r == 0 ? 0 : Math.idiv((VH >> 1) * corridor.FP, r))
+        const floor = decode(corridorArt.FLOOR)
+        floorTex = []
+        for (let sh = 0; sh < 4; sh++) floorTex.push(texels(sh == 0 ? floor : darken(floor, sh)))
+        lavaTex = texels(decode(corridorArt.LAVA))
         for (let i = 0; i < 96; i++) {
             order.push(0)
             depths.push(0)
@@ -323,6 +360,58 @@ namespace corridorRender {
         return ((enemy.walk >> 9) & 1) == 1 ? IMP_WALK_B : IMP_WALK_A
     }
 
+    function spriteShade(world: corridor.World, x: number, y: number, depth: number): number {
+        const cx = x >> 10
+        const cy = y >> 10
+        const light = cx >= 0 && cy >= 0 && cx < world.w && cy < world.h ? lit[cy * world.w + cx] : 0
+        return Math.min(2, (depth >> 12) + light)
+    }
+
+    function updateLit(world: corridor.World): void {
+        const n = world.w * world.h
+        while (lit.length < n) lit.push(0)
+        for (let cy = 0; cy < world.h; cy++) {
+            for (let cx = 0; cx < world.w; cx++) lit[cy * world.w + cx] = corridor.lightAt(world, cx, cy)
+        }
+    }
+
+    // Floor casting per column below the wall bottom: screen row y maps to the fixed floor distance
+    // rowDist = (VH / 2) * FP / (y - horizon), with the horizon already moved by bob and shake.
+    // fs > 1 fills fs x fs blocks; lavaOnly leaves plain floor to the backdrop bands.
+    function drawFloor(target: Image, world: corridor.World, horizon: number, ox: number, fs: number, lavaOnly: boolean): void {
+        const px = world.x
+        const py = world.y
+        const mapW = world.w
+        const cells = world.w * world.h
+        const flow = (world.time >> 3) & 1023
+        for (let col = 0; col < W; col += fs) {
+            let y = cBottom[col]
+            for (let k = 1; k < fs && col + k < W; k++) y = Math.min(y, cBottom[col + k])
+            if (y < horizon + FLOOR_MIN_R) y = horizon + FLOOR_MIN_R
+            const rdx = cRdx[col]
+            const rdy = cRdy[col]
+            for (; y < VH; y += fs) {
+                const d = ROWDIST[y - horizon]
+                const fx = px + ((d * rdx) >> 10)
+                const fy = py + ((d * rdy) >> 10)
+                const cell = (fy >> 10) * mapW + (fx >> 10)
+                if (fx < 0 || fy < 0 || cell >= cells) continue
+                let c = 0
+                if (world.lava[cell] == 1) {
+                    c = lavaTex[((((fy + flow) >> 6) & 15) << 4) + (((fx + flow) >> 6) & 15)]
+                } else if (lavaOnly) {
+                    continue
+                } else {
+                    let sh = (d >> 11) + lit[cell]
+                    if (sh > 3) sh = 3
+                    c = floorTex[sh][(((fy >> 6) & 15) << 4) + ((fx >> 6) & 15)]
+                }
+                if (fs == 1) target.setPixel(col + ox, y, c)
+                else target.fillRect(col + ox, y, fs, fs, c)
+            }
+        }
+    }
+
     function drawThings(target: Image, world: corridor.World, ox: number, horizon: number): void {
         let n = 0
         for (let i = 0; i < world.enemies.length && n < order.length; i++) {
@@ -376,7 +465,7 @@ namespace corridorRender {
             if (id >= 3000) {
                 const decal = world.decals[id - 3000]
                 corridor.project(world, decal.x, decal.y, proj)
-                const s = Math.min(2, proj.depth >> 12)
+                const s = spriteShade(world, decal.x, decal.y, proj.depth)
                 drawSprite(target, decalImages[decal.kind][s], proj.depth, proj.screenX, proj.size, 14, ox, horizon)
             } else if (id >= 2000) {
                 const shot = world.shots[id - 2000]
@@ -385,12 +474,12 @@ namespace corridorRender {
             } else if (id >= 1000) {
                 const item = world.items[id - 1000]
                 corridor.project(world, item.x, item.y, proj)
-                const s = Math.min(2, proj.depth >> 12)
+                const s = spriteShade(world, item.x, item.y, proj.depth)
                 drawSprite(target, itemImages[item.kind][s], proj.depth, proj.screenX, proj.size, 38, ox, horizon)
             } else {
                 const enemy = world.enemies[id]
                 corridor.project(world, enemy.x, enemy.y, proj)
-                const s = Math.min(2, proj.depth >> 12)
+                const s = spriteShade(world, enemy.x, enemy.y, proj.depth)
                 const pct = corridor.ENEMY_SIZE[enemy.kind]
                 drawSprite(target, enemyFrames[enemy.kind][impFrame(enemy)][s], proj.depth, proj.screenX, proj.size, pct, ox, horizon)
             }
@@ -417,6 +506,7 @@ namespace corridorRender {
                 else if (tile == corridor.TILE_DOOR) c = 6
                 else if (tile == corridor.TILE_DOOR_RED) c = 2
                 else if (tile == corridor.TILE_DOOR_BLUE) c = 13
+                else if (corridor.lavaAt(world, cx, cy)) c = 5
                 target.fillRect(mx + cx * cell, my + cy * cell, cell, cell, c)
             }
         }
@@ -620,18 +710,27 @@ namespace corridorRender {
         const horizon = HORIZON + oy + ((Math.abs(corridor.sin(phase)) * 3) >> 11)
         target.drawImage(backdrop, ox, horizon - HORIZON)
 
+        updateLit(world)
         const step = view.colStep < 1 ? 1 : view.colStep
         for (let col = 0; col < W; col += step) {
             corridor.castColumn(world, col, hit)
             const h = corridor.wallHeight(hit.dist)
             const set = hit.tile == corridor.TILE_EXIT && world.exitLocked ? lockedExit : walls[hit.tile]
-            const tex = set[corridor.shadeFor(hit.dist, hit.side, hit.tile)]
+            let shade = corridor.shadeFor(hit.dist, hit.side, hit.tile)
+            if (hit.tile != corridor.TILE_EXIT) shade = Math.min(3, shade + hit.light)
+            const tex = set[shade]
             const y0 = horizon - (h >> 1)
             for (let k = 0; k < step && col + k < W; k++) {
                 zbuf[col + k] = hit.dist
+                cRdx[col + k] = hit.rdx
+                cRdy[col + k] = hit.rdy
+                cBottom[col + k] = y0 + h
                 target.blitRow(col + k + ox, y0, tex, hit.texX, h)
             }
         }
+        if (view.quality == QUALITY_FULL) drawFloor(target, world, horizon, ox, 1, false)
+        else if (view.quality == QUALITY_HALF) drawFloor(target, world, horizon, ox, 2, false)
+        else drawFloor(target, world, horizon, ox, 4, true)
 
         drawThings(target, world, ox, horizon)
 

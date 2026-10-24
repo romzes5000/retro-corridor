@@ -62,6 +62,7 @@ namespace corridor {
     export function enterLevel(session: Session): World {
         const level = currentLevel(session)
         const world = createWorld(level.map, level.ang)
+        setLights(world, level.lights)
         applyDifficulty(world, session.difficulty)
         world.health = session.entryHealth
         world.ammo = session.entryAmmo

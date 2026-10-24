@@ -33,10 +33,10 @@ function centre(api: LogicApi, c: number): number {
     return c * api.FP + api.FP / 2
 }
 
-// Walkable for planning: floor, plain doors and keyed doors whose key is in `keys`.
+// Walkable for planning: floor without lava, plain doors and keyed doors whose key is in `keys`.
 export function passable(api: LogicApi, world: World, cx: number, cy: number, keys: number): boolean {
     const tile = api.tileAt(world, cx, cy)
-    if (tile === api.TILE_FLOOR) return true
+    if (tile === api.TILE_FLOOR) return !api.lavaAt(world, cx, cy)
     if (!api.isDoor(tile)) return false
     const door = api.doorAt(world, cx, cy)
     return door.key === 0 || (keys & door.key) !== 0
