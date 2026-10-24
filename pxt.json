@@ -12,6 +12,7 @@
         "doors.ts",
         "enemies.ts",
         "levels.ts",
+        "procgen.ts",
         "game.ts",
         "render.ts",
         "main.ts"

@@ -48,13 +48,15 @@ namespace corridor {
         return session.kind == RUN_CAMPAIGN ? LEVELS.length : 0
     }
 
+    // Endless depth N is always the level generated from seed N.
     export function currentLevel(session: Session): Level {
+        if (session.kind == RUN_ENDLESS) return generateLevel(session.level + 1)
         return LEVELS[session.level % LEVELS.length]
     }
 
     export function levelName(session: Session): string {
         if (session.kind == RUN_ENDLESS) return "DEPTH " + (session.level + 1)
-        return currentLevel(session).name
+        return LEVELS[session.level % LEVELS.length].name
     }
 
     // Builds the world for the session's current level with the stock (health, ammo, weapons) the
