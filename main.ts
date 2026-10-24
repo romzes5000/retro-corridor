@@ -192,8 +192,10 @@ game.onUpdate(function () {
         world.ang = (world.ang + 1) & (corridor.ANGLES - 1)
         const act = corridor.menuStep(view.menu, pad)
         if (act != corridor.ACT_NONE) {
-            const kind = act == corridor.ACT_ENDLESS ? corridor.RUN_ENDLESS : corridor.RUN_CAMPAIGN
-            session = corridor.startSession(kind, view.menu.difficulty)
+            const difficulty = view.menu.difficulty
+            if (act == corridor.ACT_LEVEL) session = corridor.startAtLevel(difficulty, view.menu.level)
+            else session = corridor.startSession(act == corridor.ACT_ENDLESS ? corridor.RUN_ENDLESS : corridor.RUN_CAMPAIGN, difficulty)
+            view.menu.levels = false
             switchTo(corridorRender.MODE_PLAY, corridor.enterLevel(session))
         }
         return

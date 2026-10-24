@@ -4,18 +4,22 @@ namespace corridor {
     export const RUN_ENDLESS = 1
 
     export const MENU_CAMPAIGN = 0
-    export const MENU_ENDLESS = 1
-    export const MENU_DIFFICULTY = 2
-    export const MENU_RECORDS = 3
-    export const MENU_ITEMS = 4
+    export const MENU_LEVELS = 1
+    export const MENU_ENDLESS = 2
+    export const MENU_DIFFICULTY = 3
+    export const MENU_RECORDS = 4
+    export const MENU_ITEMS = 5
 
     export const ACT_NONE = 0
     export const ACT_CAMPAIGN = 1
     export const ACT_ENDLESS = 2
+    export const ACT_LEVEL = 3
 
     export class Session {
         kind: number
         level: number
+        // Campaign level the run started from; only full runs (0) set time records.
+        start: number
         difficulty: number
         health: number
         ammo: number
@@ -31,6 +35,7 @@ namespace corridor {
             this.score = 0
             this.kind = kind
             this.level = 0
+            this.start = 0
             this.difficulty = difficulty
             this.health = 100
             this.ammo = START_AMMO
@@ -77,6 +82,23 @@ namespace corridor {
         return new Session(kind, difficulty)
     }
 
+    // Campaign run from the level menu. The shotgun is handed over if an earlier level has one,
+    // so a later level stays as winnable as when reached in order.
+    export function startAtLevel(difficulty: number, index: number): Session {
+        const session = new Session(RUN_CAMPAIGN, difficulty)
+        session.level = index
+        session.start = index
+        for (let i = 0; i < index; i++) {
+            if (LEVELS[i].map.join("").indexOf("G") < 0) continue
+            session.entryShotgun = true
+            session.entryWeapon = WEAPON_SHOTGUN
+            session.entryAmmo = START_AMMO + SHOTGUN_PICKUP
+            session.ammo = session.entryAmmo
+            break
+        }
+        return session
+    }
+
     // Banks the finished level; true while there is another level to play.
     export function completeLevel(session: Session, world: World): boolean {
         session.kills += world.kills
@@ -97,11 +119,27 @@ namespace corridor {
         index: number
         difficulty: number
         records: boolean
+        levels: boolean
+        level: number
         constructor() {
             this.index = MENU_CAMPAIGN
             this.difficulty = DIFF_NORMAL
             this.records = false
+            this.levels = false
+            this.level = 0
         }
+    }
+
+    // Level list: up/down pick a campaign level, A starts it (ACT_LEVEL, index in menu.level), B goes back.
+    function levelStep(menu: Menu, pad: Pad): number {
+        const n = LEVELS.length
+        if (pad.tapB) {
+            menu.levels = false
+            return ACT_NONE
+        }
+        if ((pad.tapDirs & DIR_UP) != 0) menu.level = (menu.level + n - 1) % n
+        if ((pad.tapDirs & DIR_DOWN) != 0) menu.level = (menu.level + 1) % n
+        return pad.tapA ? ACT_LEVEL : ACT_NONE
     }
 
     export function menuStep(menu: Menu, pad: Pad): number {
@@ -109,6 +147,7 @@ namespace corridor {
             if (pad.tapA || pad.tapB) menu.records = false
             return ACT_NONE
         }
+        if (menu.levels) return levelStep(menu, pad)
         if ((pad.tapDirs & DIR_UP) != 0) menu.index = (menu.index + MENU_ITEMS - 1) % MENU_ITEMS
         if ((pad.tapDirs & DIR_DOWN) != 0) menu.index = (menu.index + 1) % MENU_ITEMS
         if (menu.index == MENU_DIFFICULTY) {
@@ -119,6 +158,10 @@ namespace corridor {
         if (!pad.tapA) return ACT_NONE
         if (menu.index == MENU_CAMPAIGN) return ACT_CAMPAIGN
         if (menu.index == MENU_ENDLESS) return ACT_ENDLESS
+        if (menu.index == MENU_LEVELS) {
+            menu.levels = true
+            return ACT_NONE
+        }
         menu.records = true
         return ACT_NONE
     }
@@ -255,7 +298,7 @@ namespace corridor {
                 rec.depth = session.level
                 better = true
             }
-        } else if (session.level >= LEVELS.length) {
+        } else if (session.start == 0 && session.level >= LEVELS.length) {
             const best = rec.time[session.difficulty]
             if (best == 0 || session.time < best) {
                 rec.time[session.difficulty] = session.time

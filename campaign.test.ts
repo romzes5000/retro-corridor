@@ -204,6 +204,8 @@ test("меню: курсор ходит по кругу, стрелки меня
     press(api.DIR_DOWN)
     assert.equal(menu.index, api.MENU_CAMPAIGN)
     press(api.DIR_DOWN)
+    assert.equal(menu.index, api.MENU_LEVELS)
+    press(api.DIR_DOWN)
     press(api.DIR_DOWN)
     assert.equal(menu.index, api.MENU_DIFFICULTY)
     press(api.DIR_RIGHT)
@@ -225,7 +227,86 @@ test("меню: курсор ходит по кругу, стрелки меня
     press(api.DIR_DOWN)
     assert.equal(press(0, true), api.ACT_CAMPAIGN)
     press(api.DIR_DOWN)
+    press(api.DIR_DOWN)
     assert.equal(press(0, true), api.ACT_ENDLESS)
+})
+
+test("меню уровней: A открывает список, стрелки ходят по кругу, B назад, A запускает выбранный", () => {
+    const menu = new api.Menu()
+    const pad = new api.Pad()
+    const press = (dirs: number, a = false, b = false) => {
+        pad.tapDirs = dirs
+        pad.tapA = a
+        pad.tapB = b
+        return api.menuStep(menu, pad)
+    }
+    press(api.DIR_DOWN)
+    assert.equal(press(0, true), api.ACT_NONE, "A на LEVELS только открывает список")
+    assert.equal(menu.levels, true)
+    assert.equal(menu.level, 0)
+    press(api.DIR_UP)
+    assert.equal(menu.level, api.LEVELS.length - 1, "вверх с первого — на последний")
+    press(api.DIR_DOWN)
+    assert.equal(menu.level, 0)
+    press(api.DIR_DOWN)
+    assert.equal(menu.index, api.MENU_LEVELS, "в списке стрелки не двигают главное меню")
+    press(api.DIR_LEFT)
+    assert.equal(menu.difficulty, api.DIFF_NORMAL, "в списке влево-вправо не меняют сложность")
+
+    press(0, false, true)
+    assert.equal(menu.levels, false, "B закрывает список")
+    assert.equal(menu.level, 1, "выбор запоминается")
+    press(0, true)
+    assert.equal(press(0, true), api.ACT_LEVEL)
+    assert.equal(menu.level, 1)
+})
+
+test("старт с уровня: нужная карта, дробовик со склада, дальше кампания идёт по порядку", () => {
+    const hangar = api.startAtLevel(api.DIFF_NORMAL, 0)
+    const first = api.enterLevel(hangar)
+    assert.equal(first.w, api.LEVELS[0].map[0].length)
+    assert.equal(first.hasShotgun, false)
+    assert.equal(first.ammo, api.START_AMMO)
+
+    const warehouse = api.enterLevel(api.startAtLevel(api.DIFF_NORMAL, 1))
+    assert.equal(warehouse.w, api.LEVELS[1].map[0].length)
+    assert.equal(warehouse.hasShotgun, false, "дробовик лежит на самом складе")
+
+    const s = api.startAtLevel(api.DIFF_HARD, 2)
+    const arena = api.enterLevel(s)
+    assert.equal(arena.w, api.LEVELS[2].map[0].length)
+    assert.equal(arena.difficulty, api.DIFF_HARD)
+    assert.ok(arena.enemies.some((e) => e.kind === api.ENEMY_BOSS), "на арене босс")
+    assert.equal(arena.hasShotgun, true)
+    assert.equal(arena.weapon, api.WEAPON_SHOTGUN)
+    assert.equal(arena.ammo, api.START_AMMO + api.SHOTGUN_PICKUP)
+    arena.health = 0
+    arena.lost = true
+    assert.equal(api.enterLevel(s).hasShotgun, true, "после смерти дробовик остаётся")
+    assert.equal(api.completeLevel(s, api.enterLevel(s)), false, "последний уровень — победа")
+
+    const mid = api.startAtLevel(api.DIFF_NORMAL, 1)
+    assert.equal(api.completeLevel(mid, api.enterLevel(mid)), true)
+    assert.equal(api.enterLevel(mid).w, api.LEVELS[2].map[0].length, "после склада — арена")
+})
+
+test("с титула через меню уровней сразу на арену", () => {
+    const menu = new api.Menu()
+    const pad = new api.Pad()
+    const press = (dirs: number, a = false) => {
+        pad.tapDirs = dirs
+        pad.tapA = a
+        pad.tapB = false
+        return api.menuStep(menu, pad)
+    }
+    press(api.DIR_DOWN)
+    press(0, true)
+    press(api.DIR_DOWN)
+    press(api.DIR_DOWN)
+    assert.equal(press(0, true), api.ACT_LEVEL)
+    const session = api.startAtLevel(menu.difficulty, menu.level)
+    assert.equal(api.levelName(session), "ARENA")
+    assert.equal(api.enterLevel(session).exitLocked, true, "выход заперт до смерти босса")
 })
 
 test("крестовина в меню: нажатие срабатывает один раз, удержание не листает", () => {

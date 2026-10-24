@@ -17,7 +17,8 @@ fixed-point math, no floats in the hot loop.
 
 - **Campaign** of three hand-made levels: hangar, warehouse, arena with a boss. Red and blue keys,
   sliding doors, secret walls, level summary (kills, items, secrets, time) and a Doom-style melt between
-  screens.
+  screens. **Levels** on the title screen starts the campaign from any of the three; starting past
+  the warehouse hands over its shotgun. Only a full run from the hangar sets a time record.
 - **Endless mode**: depth N is a 24×24 maze generated from seed N, with rooms, keyed doors placed on
   the only way to the exit (the key is always on your side of its door), lava, and more and tougher
   enemies the deeper you go. A boss guards every fifth depth.
