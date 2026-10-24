@@ -282,6 +282,30 @@ export const SCENARIOS: Scenario[] = [
         tailMs: 0,
         build: (game) => endless(game, 3),
     },
+    {
+        name: "11-boss-fight",
+        maxMs: 20000,
+        tailMs: 1500,
+        build: (game) => {
+            const api = game.corridor
+            const world = api.createWorld([
+                "#############",
+                "#...........#",
+                "#..#.....#..#",
+                "#S........Z.X",
+                "#..#.....#..#",
+                "#...........#",
+                "#############",
+            ], 0)
+            world.hasShotgun = true
+            world.weapon = api.WEAPON_SHOTGUN
+            world.ammo = 30
+            const approach = new Pilot(api, [{ kind: "wait", ms: 300 }, { kind: "goto", cell: [6, 3] }])
+            const fight = fightingPilot(api, world)
+            const drive = (dt: number): Input => (approach.done ? fight(dt) : approach.next(world, dt))
+            return { world, drive, done: () => world.won || world.lost }
+        },
+    },
 ]
 
 function label(game: Game, img: FakeImage, s: string, c: number): void {

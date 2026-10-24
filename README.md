@@ -11,6 +11,7 @@ fixed-point math, no floats in the hot loop.
 | ![Key and door](demo/out/06-key-door.gif) | ![Shotgun against shooters](demo/out/07-shotgun-shooter.gif) |
 | ![Level summary and melt](demo/out/08-melt-summary.gif) | ![Floor, light and lava](demo/out/09-floor-light.gif) |
 | ![Endless mode](demo/out/10-endless.gif) | ![Imp fight](demo/out/03-imp-fight.gif) |
+| ![Boss fight](demo/out/11-boss-fight.gif) | |
 
 ## What is in it
 
