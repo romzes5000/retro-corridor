@@ -556,13 +556,23 @@ namespace corridorRender {
             centered(target, "A BACK", 86, 6, 1)
             return
         }
-        const labels = ["CAMPAIGN", "ENDLESS", "- " + corridor.DIFF_NAMES[menu.difficulty] + " +", "RECORDS"]
+        if (menu.levels) {
+            centered(target, "LEVELS", 30, 6, 1)
+            for (let i = 0; i < corridor.LEVELS.length; i++) {
+                const sel = i == menu.level
+                const label = (i + 1) + " " + corridor.LEVELS[i].name
+                centered(target, sel ? "> " + label : label, 42 + i * 10, sel ? 4 : 1, 1)
+            }
+            centered(target, "A START  B BACK", 86, 6, 1)
+            return
+        }
+        const labels = ["CAMPAIGN", "LEVELS", "ENDLESS", "- " + corridor.DIFF_NAMES[menu.difficulty] + " +", "RECORDS"]
         for (let i = 0; i < labels.length; i++) {
             const sel = i == menu.index
-            centered(target, sel ? "> " + labels[i] : labels[i], 32 + i * 10, sel ? 4 : 1, 1)
+            centered(target, sel ? "> " + labels[i] : labels[i], 30 + i * 9, sel ? 4 : 1, 1)
         }
-        centered(target, "A SELECT", 76, 6, 1)
-        centered(target, "FIND THE YELLOW EXIT", 86, 2, 1)
+        centered(target, "A SELECT", 78, 6, 1)
+        centered(target, "FIND THE YELLOW EXIT", 87, 2, 1)
     }
 
     function drawSummary(target: Image, world: corridor.World, view: View): void {

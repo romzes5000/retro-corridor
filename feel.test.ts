@@ -161,6 +161,12 @@ test("рекорды: лучшее время кампании по сложно
     assert.equal(rec.time[api.DIFF_HARD], 400000)
     assert.equal(rec.score, 900)
 
+    const shortcut = api.startAtLevel(api.DIFF_NORMAL, 2)
+    shortcut.level = 3
+    shortcut.time = 30000
+    assert.equal(api.noteRun(rec, shortcut), false, "старт с арены — не полная кампания")
+    assert.equal(rec.time[api.DIFF_NORMAL], 100000)
+
     const endless = api.startSession(api.RUN_ENDLESS, api.DIFF_NORMAL)
     endless.level = 5
     assert.equal(api.noteRun(rec, endless), true)

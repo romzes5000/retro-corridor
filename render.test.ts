@@ -216,6 +216,28 @@ test("экран итогов уровня показывает CLEAR и про�
     assert.notDeepEqual(title.pixels, next.pixels, "курсор меню рисуется")
 })
 
+test("список уровней рисуется вместо главного меню и показывает выбранный уровень", () => {
+    const world = c.createWorld(["#####", "#S..#", "#####"], 0)
+    const title = frame(world, (v) => { v.mode = r.MODE_TITLE; v.menu.index = c.MENU_LEVELS })
+    const list = (level: number) => frame(world, (v) => {
+        v.mode = r.MODE_TITLE
+        v.menu.index = c.MENU_LEVELS
+        v.menu.levels = true
+        v.menu.level = level
+    })
+    const first = list(0)
+    assert.notDeepEqual(first.pixels, title.pixels)
+    assert.notDeepEqual(list(2).pixels, first.pixels, "курсор списка рисуется")
+    const yellowRow = (img: FakeImage, y: number) => [...Array(160).keys()].some((x) => img.getPixel(x, y) === 4)
+    assert.ok(yellowRow(first, 44), "выбранный первый уровень жёлтым")
+    assert.equal(yellowRow(first, 64), false, "третий не выбран")
+    assert.ok(yellowRow(list(2), 64), "выбранный третий уровень жёлтым")
+    const glyphs = art.GLYPHS as string
+    for (const level of c.LEVELS) {
+        for (const ch of `>3${level.name}`) assert.ok(glyphs.includes(ch), `${level.name}: ${ch}`)
+    }
+})
+
 test("в шрифте есть все символы экранов меню и итогов", () => {
     const glyphs = art.GLYPHS as string
     for (const text of ["KILLS 50%", "ITEMS 66%", "SECRETS 100%", "TIME 1:15", "> - NORMAL +", "A RETRY", "YOU DIED"]) {
