@@ -17,14 +17,14 @@ namespace corridorRender {
     const HORIZON = VH >> 1
     const HEX = "0123456789abcdef"
 
-    const IMP_WALK_A = 0
-    const IMP_WALK_B = 1
-    const IMP_ATTACK = 2
-    const IMP_DEAD = 3
-    const IMP_HURT = 4
-    const IMP_DIE_A = 5
-    const IMP_DIE_B = 6
-    const IMP_DIE_C = 7
+    const FRAME_WALK_A = 0
+    const FRAME_WALK_B = 1
+    const FRAME_ATTACK = 2
+    const FRAME_DEAD = 3
+    const FRAME_HURT = 4
+    const FRAME_DIE_A = 5
+    const FRAME_DIE_B = 6
+    const FRAME_DIE_C = 7
 
     export class View {
         mode: number
@@ -99,7 +99,7 @@ namespace corridorRender {
     let lockedExit: Image[] = []
     let meltImg: Image = null
     let enemyFrames: Image[][][] = []
-    let fireball: Image[] = []
+    let fireball: Image[][] = []
     let decalImages: Image[][] = []
     let shotgun: Image = null
     let itemImages: Image[][] = []
@@ -150,16 +150,6 @@ namespace corridorRender {
         return out
     }
 
-    function whiten(src: Image): Image {
-        const out = image.create(src.width, src.height)
-        for (let y = 0; y < src.height; y++) {
-            for (let x = 0; x < src.width; x++) {
-                if (src.getPixel(x, y) != 0) out.setPixel(x, y, 1)
-            }
-        }
-        return out
-    }
-
     // Replaces template char "x" in art rows with a palette colour.
     function tint(rows: string[], c: number): string[] {
         const out: string[] = []
@@ -172,32 +162,11 @@ namespace corridorRender {
         return out
     }
 
-    function recolor(rows: string[], from: string, to: string): string[] {
-        const out: string[] = []
-        for (const row of rows) {
-            let line = ""
-            for (let i = 0; i < row.length; i++) {
-                const k = from.indexOf(row.charAt(i))
-                line += k >= 0 ? to.charAt(k) : row.charAt(i)
-            }
-            out.push(line)
-        }
+    // Frames of one enemy kind from the imported sheet (art-enemies.ts), each with 3 distance shades.
+    function enemySet(kind: number): Image[][] {
+        const out: Image[][] = []
+        for (const rows of corridorArt.ENEMY_ART[kind]) out.push(shades(decode(rows), 3))
         return out
-    }
-
-    function enemySet(from: string, to: string): Image[][] {
-        const walkA = decode(recolor(corridorArt.IMP_WALK_A, from, to))
-        const white = whiten(walkA)
-        return [
-            shades(walkA, 3),
-            shades(decode(recolor(corridorArt.IMP_WALK_B, from, to)), 3),
-            shades(decode(recolor(corridorArt.IMP_ATTACK, from, to)), 3),
-            shades(decode(recolor(corridorArt.IMP_DEAD, from, to)), 3),
-            [white, white, white],
-            shades(decode(recolor(corridorArt.IMP_DIE_A, from, to)), 3),
-            shades(decode(recolor(corridorArt.IMP_DIE_B, from, to)), 3),
-            shades(decode(recolor(corridorArt.IMP_DIE_C, from, to)), 3),
-        ]
     }
 
     function overlay(base: Image, top: Image): Image {
@@ -251,8 +220,9 @@ namespace corridorRender {
         ]
         lockedExit = shades(overlay(exitImg, decode(corridorArt.EXIT_BARS)), 4)
         enemyFrames = []
-        for (const pair of corridorArt.ENEMY_RECOLOR) enemyFrames.push(enemySet(pair[0], pair[1]))
-        fireball = shades(decode(corridorArt.FIREBALL), 2)
+        for (let kind = 0; kind < corridorArt.ENEMY_ART.length; kind++) enemyFrames.push(enemySet(kind))
+        fireball = []
+        for (const rows of corridorArt.FIREBALL_FRAMES) fireball.push(shades(decode(rows), 2))
         decalImages = [shades(decode(corridorArt.BLOOD), 3), shades(decode(corridorArt.SCORCH), 3)]
         shotgun = decode(corridorArt.SHOTGUN)
         itemImages = [
@@ -335,9 +305,9 @@ namespace corridorRender {
     }
 
     // Fireballs fly at chest height instead of standing on the floor like other sprites.
-    function drawFireball(target: Image, depth: number, screenX: number, size: number, ox: number, horizon: number): void {
+    function drawFireball(target: Image, depth: number, screenX: number, size: number, ox: number, horizon: number, time: number): void {
         const d = Math.max(2, size >> 2)
-        const img = fireball[depth > 4 * corridor.FP ? 1 : 0]
+        const img = fireball[(time >> 7) & 1][depth > 4 * corridor.FP ? 1 : 0]
         const x0 = screenX - (d >> 1)
         const y0 = horizon - (d >> 1) + (size >> 4)
         for (let c = Math.max(0, x0); c <= Math.min(W - 1, x0 + d - 1); c++) {
@@ -347,17 +317,17 @@ namespace corridorRender {
         }
     }
 
-    function impFrame(enemy: corridor.Enemy): number {
+    function enemyFrame(enemy: corridor.Enemy): number {
         if (enemy.dead) {
             const f = Math.idiv(enemy.deadMs, corridor.DIE_FRAME_MS)
-            if (f == 0) return IMP_DIE_A
-            if (f == 1) return IMP_DIE_B
-            if (f == 2) return IMP_DIE_C
-            return IMP_DEAD
+            if (f == 0) return FRAME_DIE_A
+            if (f == 1) return FRAME_DIE_B
+            if (f == 2) return FRAME_DIE_C
+            return FRAME_DEAD
         }
-        if (enemy.hurt > 0) return IMP_HURT
-        if (enemy.attack > 0) return IMP_ATTACK
-        return ((enemy.walk >> 9) & 1) == 1 ? IMP_WALK_B : IMP_WALK_A
+        if (enemy.hurt > 0) return FRAME_HURT
+        if (enemy.attack > 0) return FRAME_ATTACK
+        return ((enemy.walk >> 9) & 1) == 1 ? FRAME_WALK_B : FRAME_WALK_A
     }
 
     function spriteShade(world: corridor.World, x: number, y: number, depth: number): number {
@@ -470,7 +440,7 @@ namespace corridorRender {
             } else if (id >= 2000) {
                 const shot = world.shots[id - 2000]
                 corridor.project(world, shot.x, shot.y, proj)
-                drawFireball(target, proj.depth, proj.screenX, proj.size, ox, horizon)
+                drawFireball(target, proj.depth, proj.screenX, proj.size, ox, horizon, world.time)
             } else if (id >= 1000) {
                 const item = world.items[id - 1000]
                 corridor.project(world, item.x, item.y, proj)
@@ -481,7 +451,7 @@ namespace corridorRender {
                 corridor.project(world, enemy.x, enemy.y, proj)
                 const s = spriteShade(world, enemy.x, enemy.y, proj.depth)
                 const pct = corridor.ENEMY_SIZE[enemy.kind]
-                drawSprite(target, enemyFrames[enemy.kind][impFrame(enemy)][s], proj.depth, proj.screenX, proj.size, pct, ox, horizon)
+                drawSprite(target, enemyFrames[enemy.kind][enemyFrame(enemy)][s], proj.depth, proj.screenX, proj.size, pct, ox, horizon)
             }
         }
     }
