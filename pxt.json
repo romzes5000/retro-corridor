@@ -1,6 +1,6 @@
 {
     "name": "corridor",
-    "version": "0.3.0",
+    "version": "1.0.0",
     "description": "Doom-style raycaster corridor for MakeCode Arcade F4 consoles",
     "dependencies": {
         "device": "*",
