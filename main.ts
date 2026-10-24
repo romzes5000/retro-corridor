@@ -105,6 +105,15 @@ corridorRender.init()
 
 const FPS_LOG_MS = 5000
 
+// Mailbox the USB bridge writes AI commands into; found by its signature among the globals.
+const AI_BOX = Buffer.create(corridor.AI_BOX_SIZE)
+for (let i = 0; i < corridor.AI_SIG.length; i++) AI_BOX[i] = corridor.AI_SIG.charCodeAt(i)
+const AI_RUN = randint(1, 30000)
+const readAiBox = function (i: number): number {
+    return AI_BOX[i]
+}
+let link: corridor.AiLink = null
+
 let session: corridor.Session = null
 let world = titleWorld()
 let view = new corridorRender.View()
@@ -144,6 +153,20 @@ function titleWorld(): corridor.World {
     const w = corridor.createWorld(corridor.CAMPAIGN, 0)
     w.enemies = []
     return w
+}
+
+function enter(): corridor.World {
+    const next = corridor.enterLevel(session)
+    if (link) corridor.aiEnterLevel(link, session, next)
+    return next
+}
+
+function logLine(line: string): void {
+    console.log(line)
+}
+
+function aiLog(lines: string[]): void {
+    for (const line of lines) console.log(line)
 }
 
 function nextView(mode: number): corridorRender.View {
@@ -196,24 +219,30 @@ game.onUpdate(function () {
             if (act == corridor.ACT_LEVEL) session = corridor.startAtLevel(difficulty, view.menu.level)
             else session = corridor.startSession(act == corridor.ACT_ENDLESS ? corridor.RUN_ENDLESS : corridor.RUN_CAMPAIGN, difficulty)
             view.menu.levels = false
-            switchTo(corridorRender.MODE_PLAY, corridor.enterLevel(session))
+            session.ai = view.menu.ai
+            link = session.ai ? new corridor.AiLink(AI_RUN) : null
+            switchTo(corridorRender.MODE_PLAY, enter())
         }
         return
     }
     if (view.mode == corridorRender.MODE_VICTORY) {
-        if (pad.tapA) switchTo(corridorRender.MODE_TITLE, titleWorld())
+        if (pad.tapA || (link && corridor.aiAutoNext(link, dt, corridor.AI_TITLE_MS))) {
+            link = null
+            switchTo(corridorRender.MODE_TITLE, titleWorld())
+        }
         return
     }
+    const end = link ? corridor.aiEndStep(link, world, dt, logLine) : corridor.AI_STAY
     if (world.won) {
-        if (!pad.tapA) return
+        if (!pad.tapA && end == corridor.AI_STAY) return
         const more = corridor.completeLevel(session, world)
         if (!more || session.kind == corridor.RUN_ENDLESS) noteRecords()
-        if (more) switchTo(corridorRender.MODE_PLAY, corridor.enterLevel(session))
+        if (more) switchTo(corridorRender.MODE_PLAY, enter())
         else switchTo(corridorRender.MODE_VICTORY, world)
         return
     }
     if (world.lost) {
-        if (pad.tapA) switchTo(corridorRender.MODE_PLAY, corridor.enterLevel(session))
+        if (pad.tapA || end != corridor.AI_STAY) switchTo(corridorRender.MODE_PLAY, enter())
         return
     }
     if (view.pause) {
@@ -229,6 +258,7 @@ game.onUpdate(function () {
         } else if (act == corridor.PACT_QUIT) {
             view.pause = null
             noteRecords()
+            link = null
             switchTo(corridorRender.MODE_TITLE, titleWorld())
         }
         return
@@ -239,7 +269,15 @@ game.onUpdate(function () {
         return
     }
     if (pad.tapB) view.mapOpen = !view.mapOpen
-    corridor.update(world, keys, dt)
+    if (link) {
+        const input = corridor.aiFrame(link, world, dt, readAiBox)
+        if (corridor.aiSnapshotDue(link)) aiLog(corridor.aiSnapshot(link, world, session.difficulty))
+        view.aiLine = corridor.aiStatus(link)
+        corridor.update(world, input, dt)
+    } else {
+        view.aiLine = ""
+        corridor.update(world, keys, dt)
+    }
     corridorRender.react(view, world.events)
     playEvents(world)
 })

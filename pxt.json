@@ -15,6 +15,7 @@
         "levels.ts",
         "procgen.ts",
         "game.ts",
+        "ai.ts",
         "render.ts",
         "main.ts"
     ],
