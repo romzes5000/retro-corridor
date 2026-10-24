@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { loadLogic } from "./load-logic.ts"
-import { findPath } from "./demo/pilot.ts"
+import { findPath } from "./bridge/route.ts"
 
 const api = loadLogic()
 const { createWorld, update } = api

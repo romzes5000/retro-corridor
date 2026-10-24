@@ -217,6 +217,17 @@ test("меню: курсор ходит по кругу, стрелки меня
     assert.equal(press(0, true), api.ACT_NONE)
 
     press(api.DIR_DOWN)
+    assert.equal(menu.index, api.MENU_PLAYER)
+    assert.equal(menu.ai, false)
+    press(api.DIR_RIGHT)
+    assert.equal(menu.ai, true, "стрелка переключает игрока на ИИ")
+    assert.equal(press(0, true), api.ACT_NONE, "A на PLAYER только переключает")
+    assert.equal(menu.ai, false)
+    press(api.DIR_LEFT)
+    assert.equal(menu.ai, true)
+    assert.equal(menu.records, false)
+
+    press(api.DIR_DOWN)
     assert.equal(press(0, true), api.ACT_NONE)
     assert.equal(menu.records, true)
     press(api.DIR_UP)

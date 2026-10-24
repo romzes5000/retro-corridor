@@ -7,8 +7,9 @@ namespace corridor {
     export const MENU_LEVELS = 1
     export const MENU_ENDLESS = 2
     export const MENU_DIFFICULTY = 3
-    export const MENU_RECORDS = 4
-    export const MENU_ITEMS = 5
+    export const MENU_PLAYER = 4
+    export const MENU_RECORDS = 5
+    export const MENU_ITEMS = 6
 
     export const ACT_NONE = 0
     export const ACT_CAMPAIGN = 1
@@ -21,6 +22,8 @@ namespace corridor {
         // Campaign level the run started from; only full runs (0) set time records.
         start: number
         difficulty: number
+        // Played by the AI over the USB link; such runs never set records.
+        ai: boolean
         health: number
         ammo: number
         entryHealth: number
@@ -36,6 +39,7 @@ namespace corridor {
             this.kind = kind
             this.level = 0
             this.start = 0
+            this.ai = false
             this.difficulty = difficulty
             this.health = 100
             this.ammo = START_AMMO
@@ -121,12 +125,14 @@ namespace corridor {
         records: boolean
         levels: boolean
         level: number
+        ai: boolean
         constructor() {
             this.index = MENU_CAMPAIGN
             this.difficulty = DIFF_NORMAL
             this.records = false
             this.levels = false
             this.level = 0
+            this.ai = false
         }
     }
 
@@ -153,6 +159,10 @@ namespace corridor {
         if (menu.index == MENU_DIFFICULTY) {
             if ((pad.tapDirs & DIR_LEFT) != 0) menu.difficulty = (menu.difficulty + 2) % 3
             if ((pad.tapDirs & DIR_RIGHT) != 0 || pad.tapA) menu.difficulty = (menu.difficulty + 1) % 3
+            return ACT_NONE
+        }
+        if (menu.index == MENU_PLAYER) {
+            if ((pad.tapDirs & (DIR_LEFT | DIR_RIGHT)) != 0 || pad.tapA) menu.ai = !menu.ai
             return ACT_NONE
         }
         if (!pad.tapA) return ACT_NONE
@@ -288,6 +298,7 @@ namespace corridor {
 
     // Folds a finished campaign or an endless run into the records; true if anything improved.
     export function noteRun(rec: Records, session: Session): boolean {
+        if (session.ai) return false
         let better = false
         if (session.score > rec.score) {
             rec.score = session.score

@@ -3,9 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --test logic.test.ts campaign.test.ts combat.test.ts feel.test.ts gfx.test.ts render.test.ts play.test.ts procgen.test.ts tools/sprite-import.test.ts demo/make-gifs.test.ts",
+    "test": "node --experimental-strip-types --test logic.test.ts campaign.test.ts combat.test.ts feel.test.ts gfx.test.ts render.test.ts play.test.ts procgen.test.ts ai.test.ts bridge/bridge.test.ts bridge/hf2-frame.test.ts tools/sprite-import.test.ts demo/make-gifs.test.ts",
     "demo": "node --experimental-strip-types demo/make-gifs.ts",
-    "sprites": "node --experimental-strip-types tools/sprite-import.ts"
+    "sprites": "node --experimental-strip-types tools/sprite-import.ts",
+    "ai": "node --experimental-strip-types bridge/main.ts",
+    "ai:probe": "node --experimental-strip-types bridge/probe.ts"
   },
   "devDependencies": {
     "@types/pngjs": "^6.0.5",
@@ -13,5 +15,8 @@
     "makecode": "^1.3.6",
     "pngjs": "^7.0.0",
     "typescript": "^5.9.3"
+  },
+  "optionalDependencies": {
+    "usb": "^2.19.1"
   }
 }

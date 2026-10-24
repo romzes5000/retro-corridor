@@ -7,10 +7,14 @@ import { FakeImage } from "../fake-image.ts"
 import { loadGame, type Game, type Input, type View, type World } from "../load-logic.ts"
 import { Frame, encodeGif, paste, rgbList } from "./frames.ts"
 import { DEFAULT_PALETTE, drawLegacy, legacyWorld, type LegacyWorld } from "./legacy.ts"
-import { Pilot, fightingPilot, type Cell } from "./pilot.ts"
+import type { Cell } from "../bridge/route.ts"
+import { Replayer, SIM_DT, type SimRecording } from "../bridge/sim.ts"
+import { Pilot, fightingPilot } from "./pilot.ts"
 
 export const DT = 40
 const FP = 1024
+// Replay speed of the AI run in 12-ai-player.
+const AI_SPEED = 3
 
 export const LEGACY_CAMPAIGN = [
     "#########",
@@ -26,7 +30,10 @@ export const LEGACY_CAMPAIGN = [
 
 interface Run {
     world: World
-    drive: (dt: number) => Input
+    // Either a pad driver stepped at DT, or `advance`, which steps the world itself and returns
+    // the events (a replay recorded at a finer step).
+    drive?: (dt: number) => Input
+    advance?: (dt: number) => string[]
     done: () => boolean
     mapOpen?: () => boolean
     // Called after each frame; a returned view replaces the current one (screen change).
@@ -306,6 +313,26 @@ export const SCENARIOS: Scenario[] = [
             return { world, drive, done: () => world.won || world.lost }
         },
     },
+    {
+        // Real Jev run from `npm run ai -- --sim HANGAR --record demo/ai-hangar.json`, replayed
+        // frame by frame at 3x so the whole level fits the size limit.
+        name: "12-ai-player",
+        tag: "JEV 3X",
+        maxMs: 16000,
+        tailMs: 1500,
+        build: (game) => {
+            const rec = JSON.parse(fs.readFileSync(new URL("./ai-hangar.json", import.meta.url), "utf8")) as SimRecording
+            const player = new Replayer(game.corridor, rec)
+            return {
+                world: player.world,
+                advance: (dt) => player.advance((AI_SPEED * dt) / SIM_DT),
+                done: () => player.done,
+                step: (_t, view) => {
+                    view.aiLine = player.status()
+                },
+            }
+        },
+    },
 ]
 
 function label(game: Game, img: FakeImage, s: string, c: number): void {
@@ -347,9 +374,12 @@ export function record(scenario: Scenario, game: Game = loadGame()): Recording {
     let melted = false
     for (let t = 0; t < scenario.maxMs; t += DT) {
         if (!view.meltOn) {
-            const input = run.drive(DT)
-            c.update(run.world, input, DT)
-            r.react(view, run.world.events)
+            if (run.advance) {
+                r.react(view, run.advance(DT))
+            } else if (run.drive) {
+                c.update(run.world, run.drive(DT), DT)
+                r.react(view, run.world.events)
+            }
         }
         r.tick(view, DT)
         r.meltTick(view, DT)

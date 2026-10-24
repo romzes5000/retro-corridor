@@ -49,8 +49,11 @@ namespace corridorRender {
         meltOn: boolean
         melt: number[]
         pause: corridor.Pause
+        // AI player status line ("JEV ATTACK 84% 230MS"); empty when a human plays.
+        aiLine: string
         constructor() {
             this.pause = null
+            this.aiLine = ""
             this.menu = new corridor.Menu()
             this.session = null
             this.records = []
@@ -545,6 +548,10 @@ namespace corridorRender {
         target.fillRect(14, y + 2, W - 28, h - 4, 15)
     }
 
+    export const TITLE_ITEM_Y = 29
+    export const TITLE_ITEM_STEP = 9
+    export const TITLE_HINT_Y = 86
+
     function drawTitle(target: Image, view: View): void {
         const menu = view.menu
         panel(target, 6, 90, 5)
@@ -566,13 +573,13 @@ namespace corridorRender {
             centered(target, "A START  B BACK", 86, 6, 1)
             return
         }
-        const labels = ["CAMPAIGN", "LEVELS", "ENDLESS", "- " + corridor.DIFF_NAMES[menu.difficulty] + " +", "RECORDS"]
+        const labels = ["CAMPAIGN", "LEVELS", "ENDLESS", "- " + corridor.DIFF_NAMES[menu.difficulty] + " +",
+            "PLAYER " + (menu.ai ? "AI" : "HUMAN"), "RECORDS"]
         for (let i = 0; i < labels.length; i++) {
             const sel = i == menu.index
-            centered(target, sel ? "> " + labels[i] : labels[i], 30 + i * 9, sel ? 4 : 1, 1)
+            centered(target, sel ? "> " + labels[i] : labels[i], TITLE_ITEM_Y + i * TITLE_ITEM_STEP, sel ? 4 : 1, 1)
         }
-        centered(target, "A SELECT", 78, 6, 1)
-        centered(target, "FIND THE YELLOW EXIT", 87, 2, 1)
+        centered(target, "A SELECT", TITLE_HINT_Y, 6, 1)
     }
 
     function drawSummary(target: Image, world: corridor.World, view: View): void {
@@ -743,6 +750,7 @@ namespace corridorRender {
         drawOverlay(target, world, view)
         drawMelt(target, view)
         if (view.showFps) shadowText(target, view.fps + "FPS", 4, 4, 4, 1)
+        if (view.aiLine != "" && view.mode == MODE_PLAY) shadowText(target, view.aiLine, 4, 12, 5, 1)
     }
 
     function decay(v: number, dt: number): number {
