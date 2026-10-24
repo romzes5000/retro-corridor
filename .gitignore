@@ -6,3 +6,4 @@ built/
 demo/baseline/
 demo/after/
 demo/out/sheet-*.png
+bridge/out/

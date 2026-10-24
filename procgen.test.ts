@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { loadLogic, type Input, type World } from "./load-logic.ts"
-import { exitSpot, fightingPilot, findPath, planRoute, type Cell } from "./demo/pilot.ts"
+import { exitSpot, findPath, planRoute, type Cell } from "./bridge/route.ts"
+import { fightingPilot } from "./demo/pilot.ts"
 
 const api = loadLogic()
 const SEEDS = 200

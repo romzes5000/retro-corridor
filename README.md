@@ -11,7 +11,7 @@ fixed-point math, no floats in the hot loop.
 | ![Key and door](demo/out/06-key-door.gif) | ![Shotgun against shooters](demo/out/07-shotgun-shooter.gif) |
 | ![Level summary and melt](demo/out/08-melt-summary.gif) | ![Floor, light and lava](demo/out/09-floor-light.gif) |
 | ![Endless mode](demo/out/10-endless.gif) | ![Imp fight](demo/out/03-imp-fight.gif) |
-| ![Boss fight](demo/out/11-boss-fight.gif) | |
+| ![Boss fight](demo/out/11-boss-fight.gif) | ![Jev plays the hangar](demo/out/12-ai-player.gif) |
 
 ## What is in it
 
@@ -30,6 +30,8 @@ fixed-point math, no floats in the hot loop.
   after 3 s below 20 FPS.
 - **Feel**: distance-attenuated sound, music, pause menu, difficulty (easy / normal / hard), records
   saved on the console.
+- **AI player**: `PLAYER AI` on the title screen hands the controls to Jev, a fast decision model,
+  running on a Mac connected over USB. See below.
 
 ## Controls
 
@@ -59,6 +61,43 @@ the UF2 onto it. The console reboots into the game.
 The game logs `fps N qQ step S` to the console once every 5 s (readable over HF2), handy for checking
 performance on real hardware.
 
+## AI player over USB (Jev)
+
+With `PLAYER AI` selected, the console plays by itself while a bridge on the computer decides what to
+do next. The game never waits for it: it keeps running at full speed and executes the last command.
+
+1. Every 250 ms the console prints a snapshot over the HF2 serial channel: player, live enemies,
+   fireballs, doors, picked-up items (`AI S ...` to `AI END`). The map never goes over the wire.
+2. The bridge rebuilds the same level from the game code (`load-logic.ts`) and checks the console's
+   map hash, then works out the route (key, its door, the exit, or the boss while the exit is locked).
+3. It describes the situation in plain English (goal, visible enemies, the safe side of an incoming
+   fireball, medkit and ammo distance, the outcome of the last commands) and asks
+   Jev (TypeSafe System One, `/api/v1/systemone` on OpenRouter) to pick one tactic: advance, attack,
+   dodge left or right, retreat, heal, ammo, open, wait.
+4. The tactic becomes one short command (go to a cell up to 2 tiles away in a straight line, attack
+   enemy N, strafe, use, wait), written straight into a 32-byte mailbox in the console's RAM.
+   Commands answering a snapshot older than 1.2 s of game time are dropped.
+
+The screen shows `JEV ATTACK 84% 230MS` (tactic, confidence, model latency), or `NO LINK` after 3 s
+without commands. AI runs never set records; after a death the level restarts by itself, after a win
+the next one starts. Hold B for the pause menu, `QUIT` returns control to you.
+
+```bash
+export OPENROUTER_KEY=...            # an OpenRouter API key; never commit it
+npm run ai -- --check                # console only: finds the mailbox, listens for 3 s
+npm run ai                           # play on the console (pick PLAYER AI, start a level)
+npm run ai -- --sim HANGAR --runs 5  # same protocol against the game running in Node
+npm run ai -- --sim HANGAR --fake --fast   # rule-based picks, no key, virtual time
+npm run ai:probe                     # latency and cost of 30 Jev calls
+```
+
+`JEV_MODEL` overrides the model (default `~typesafe/jev-latest`). Every decision goes to
+`bridge/out/run-*.jsonl` with the facts, the answer, the latency and the cost.
+
+On five simulated runs of the hangar on normal Jev won 5 of 5, at 488 ms median latency
+(591 ms p95), about 2 decisions per second and $0.00003 per decision, roughly $0.03 for ten minutes
+of play. The GIF above is one of those runs replayed from `demo/ai-hangar.json` at 3x.
+
 ## Layout
 
 | File | What |
@@ -70,7 +109,9 @@ performance on real hardware.
 | `render.ts`, `art.ts` | Renderer; walls, weapons, items and font drawn in code |
 | `art-enemies.ts` | Enemy and fireball frames, generated from `art-src/demons.png` |
 | `tools/` | Sprite sheet importer |
-| `main.ts` | Device glue: loop, sound, music, settings |
+| `ai.ts` | AI link on the console: snapshots, mailbox, command executor, status line |
+| `main.ts` | Device glue: loop, sound, music, settings, AI mailbox |
+| `bridge/` | AI bridge on the computer: HF2 transport, shadow world, route, facts, Jev, simulator |
 | `demo/` | Pilot bot, GIF recorder, legacy renderer for the before/after clip |
 
 ## Art
