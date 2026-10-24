@@ -1,0 +1,14 @@
+{
+  "name": "retro-corridor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test logic.test.ts render.test.ts play.test.ts demo/make-gifs.test.ts",
+    "demo": "node --experimental-strip-types demo/make-gifs.ts"
+  },
+  "devDependencies": {
+    "gifenc": "^1.0.3",
+    "makecode": "^1.3.6",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Cache MakeCode target
+        uses: actions/cache@v4
+        with:
+          path: ~/.pxt
+          key: pxt-${{ runner.os }}-${{ hashFiles('pxt.json', 'mkc.json') }}
+          restore-keys: pxt-${{ runner.os }}-
+      - run: npm ci
+      - run: npm test
+      - run: npx makecode build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: corridor-uf2
+          path: built/stm32f401/binary.uf2

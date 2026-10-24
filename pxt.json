@@ -1,0 +1,19 @@
+{
+    "name": "corridor",
+    "version": "0.2.0",
+    "description": "Doom-style raycaster corridor for MakeCode Arcade F4 consoles",
+    "dependencies": {
+        "device": "*",
+        "controller": "*"
+    },
+    "files": [
+        "art.ts",
+        "logic.ts",
+        "render.ts",
+        "main.ts"
+    ],
+    "supportedTargets": [
+        "arcade"
+    ],
+    "preferredEditor": "tsprj"
+}

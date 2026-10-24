@@ -1,0 +1,471 @@
+// Frame renderer. Uses only fill/fillRect/setPixel/drawImage/blitRow/blit/drawTransparentImage
+// so fake-image.ts can run this exact file in Node for tests and demo GIFs.
+namespace corridorRender {
+    export const MODE_TITLE = 0
+    export const MODE_PLAY = 1
+
+    export const FACE_OK = 0
+    export const FACE_HURT = 1
+    export const FACE_GRIN = 2
+    export const FACE_DEAD = 3
+
+    const W = corridor.VIEW_W
+    const VH = corridor.VIEW_H
+    const HORIZON = VH >> 1
+    const HEX = "0123456789abcdef"
+
+    const IMP_WALK_A = 0
+    const IMP_WALK_B = 1
+    const IMP_ATTACK = 2
+    const IMP_DEAD = 3
+    const IMP_HURT = 4
+
+    export class View {
+        mode: number
+        mapOpen: boolean
+        flash: number
+        recoil: number
+        hurt: number
+        shake: number
+        pickup: number
+        face: number
+        faceTime: number
+        showFps: boolean
+        fps: number
+        frames: number
+        acc: number
+        colStep: number
+        slowFor: number
+        constructor() {
+            this.mode = MODE_TITLE
+            this.mapOpen = false
+            this.flash = 0
+            this.recoil = 0
+            this.hurt = 0
+            this.shake = 0
+            this.pickup = 0
+            this.face = FACE_OK
+            this.faceTime = 0
+            this.showFps = false
+            this.fps = 0
+            this.frames = 0
+            this.acc = 0
+            this.colStep = 1
+            this.slowFor = 0
+        }
+    }
+
+    export const SLOW_FPS = 15
+    export const SLOW_MS = 3000
+
+    // Drops to 80 rays (2-pixel columns) once the measured FPS stays under SLOW_FPS for SLOW_MS.
+    export function adapt(view: View, dt: number): void {
+        if (view.colStep > 1 || view.fps == 0) return
+        view.slowFor = view.fps < SLOW_FPS ? view.slowFor + dt : 0
+        if (view.slowFor > SLOW_MS) view.colStep = 2
+    }
+
+    let walls: Image[][] = []
+    let impFrames: Image[][] = []
+    let itemImages: Image[][] = []
+    let faces: Image[] = []
+    let gun: Image = null
+    let muzzle: Image = null
+    let backdrop: Image = null
+    let hud: Image = null
+    let hudKey = ""
+    const zbuf: number[] = []
+    const order: number[] = []
+    const depths: number[] = []
+    const hit = new corridor.Hit()
+    const proj = new corridor.Proj()
+
+    export function decode(rows: string[]): Image {
+        const h = rows.length
+        const w = rows[0].length
+        const img = image.create(w, h)
+        for (let y = 0; y < h; y++) {
+            const row = rows[y]
+            for (let x = 0; x < w; x++) {
+                const ch = row.charAt(x)
+                if (ch != ".") img.setPixel(x, y, HEX.indexOf(ch))
+            }
+        }
+        return img
+    }
+
+    export function darken(src: Image, steps: number): Image {
+        const out = image.create(src.width, src.height)
+        for (let y = 0; y < src.height; y++) {
+            for (let x = 0; x < src.width; x++) {
+                let c = src.getPixel(x, y)
+                for (let s = 0; s < steps && c != 0; s++) c = corridorArt.DARKER[c]
+                if (c != 0) out.setPixel(x, y, c)
+            }
+        }
+        return out
+    }
+
+    function whiten(src: Image): Image {
+        const out = image.create(src.width, src.height)
+        for (let y = 0; y < src.height; y++) {
+            for (let x = 0; x < src.width; x++) {
+                if (src.getPixel(x, y) != 0) out.setPixel(x, y, 1)
+            }
+        }
+        return out
+    }
+
+    function shades(src: Image, count: number): Image[] {
+        const out: Image[] = [src]
+        for (let s = 1; s < count; s++) out.push(darken(src, s))
+        return out
+    }
+
+    function buildBackdrop(): Image {
+        const img = image.create(W, VH)
+        for (const band of corridorArt.BANDS) {
+            for (let y = band[0]; y <= band[1]; y++) {
+                if (band[2] == band[3]) {
+                    img.fillRect(0, y, W, 1, band[2])
+                } else {
+                    for (let x = 0; x < W; x++) img.setPixel(x, y, ((x + y) & 1) == 0 ? band[2] : band[3])
+                }
+            }
+        }
+        return img
+    }
+
+    export function init(): void {
+        if (walls.length > 0) return
+        const stone = shades(decode(corridorArt.STONE), 4)
+        walls = [stone, stone, shades(decode(corridorArt.BRICK), 4), shades(decode(corridorArt.EXIT), 4)]
+        const walkA = decode(corridorArt.IMP_WALK_A)
+        impFrames = [
+            shades(walkA, 3),
+            shades(decode(corridorArt.IMP_WALK_B), 3),
+            shades(decode(corridorArt.IMP_ATTACK), 3),
+            shades(decode(corridorArt.IMP_DEAD), 3),
+        ]
+        const white = whiten(walkA)
+        impFrames.push([white, white, white])
+        itemImages = [shades(decode(corridorArt.MEDKIT), 3), shades(decode(corridorArt.AMMO), 3)]
+        faces = [
+            decode(corridorArt.FACE_OK),
+            decode(corridorArt.FACE_HURT),
+            decode(corridorArt.FACE_GRIN),
+            decode(corridorArt.FACE_DEAD),
+        ]
+        gun = decode(corridorArt.GUN)
+        muzzle = decode(corridorArt.FLASH)
+        backdrop = buildBackdrop()
+        hud = image.create(W, 20)
+        for (let i = 0; i < W; i++) zbuf.push(0)
+        for (let i = 0; i < 64; i++) {
+            order.push(0)
+            depths.push(0)
+        }
+    }
+
+    export function textWidth(s: string, scale: number): number {
+        return s.length * 4 * scale - scale
+    }
+
+    export function text(target: Image, s: string, x: number, y: number, c: number, scale: number): void {
+        let cx = x
+        for (let i = 0; i < s.length; i++) {
+            const g = corridorArt.GLYPHS.indexOf(s.charAt(i))
+            if (g >= 0) {
+                const bits = corridorArt.FONT[g]
+                for (let b = 0; b < 15; b++) {
+                    if (bits.charAt(b) == "1") {
+                        target.fillRect(cx + (b % 3) * scale, y + Math.idiv(b, 3) * scale, scale, scale, c)
+                    }
+                }
+            }
+            cx += 4 * scale
+        }
+    }
+
+    function shadowText(target: Image, s: string, x: number, y: number, c: number, scale: number): void {
+        text(target, s, x + 1, y + 1, 15, scale)
+        text(target, s, x, y, c, scale)
+    }
+
+    function centered(target: Image, s: string, y: number, c: number, scale: number): void {
+        shadowText(target, s, (W - textWidth(s, scale)) >> 1, y, c, scale)
+    }
+
+    function drawSprite(target: Image, img: Image, depth: number, screenX: number, size: number,
+        pct: number, ox: number, horizon: number): void {
+        const dh = Math.idiv(size * pct, 100)
+        if (dh < 2) return
+        const dw = Math.idiv(dh * img.width, img.height)
+        const x0 = screenX - (dw >> 1)
+        const y0 = horizon + (size >> 1) - dh
+        const c0 = Math.max(0, x0)
+        const c1 = Math.min(W - 1, x0 + dw - 1)
+        for (let c = c0; c <= c1; c++) {
+            if (depth >= zbuf[c]) continue
+            const sx = Math.idiv((c - x0) * img.width, dw)
+            target.blit(c + ox, y0, 1, dh, img, sx, 0, 1, img.height, true, false)
+        }
+    }
+
+    function impFrame(imp: corridor.Imp): number {
+        if (imp.dead) return IMP_DEAD
+        if (imp.hurt > 0) return IMP_HURT
+        if (imp.attack > 0) return IMP_ATTACK
+        return ((imp.walk >> 9) & 1) == 1 ? IMP_WALK_B : IMP_WALK_A
+    }
+
+    function drawThings(target: Image, world: corridor.World, ox: number, horizon: number): void {
+        let n = 0
+        for (let i = 0; i < world.imps.length && n < order.length; i++) {
+            const imp = world.imps[i]
+            corridor.project(world, imp.x, imp.y, proj)
+            if (!proj.visible) continue
+            order[n] = i
+            depths[n] = proj.depth
+            n++
+        }
+        for (let j = 0; j < world.items.length && n < order.length; j++) {
+            const item = world.items[j]
+            if (item.taken) continue
+            corridor.project(world, item.x, item.y, proj)
+            if (!proj.visible) continue
+            order[n] = 1000 + j
+            depths[n] = proj.depth
+            n++
+        }
+        for (let i = 1; i < n; i++) {
+            const o = order[i]
+            const d = depths[i]
+            let k = i - 1
+            while (k >= 0 && depths[k] < d) {
+                order[k + 1] = order[k]
+                depths[k + 1] = depths[k]
+                k--
+            }
+            order[k + 1] = o
+            depths[k + 1] = d
+        }
+        for (let i = 0; i < n; i++) {
+            const id = order[i]
+            if (id >= 1000) {
+                const item = world.items[id - 1000]
+                corridor.project(world, item.x, item.y, proj)
+                const s = Math.min(2, proj.depth >> 12)
+                drawSprite(target, itemImages[item.kind][s], proj.depth, proj.screenX, proj.size, 38, ox, horizon)
+            } else {
+                const imp = world.imps[id]
+                corridor.project(world, imp.x, imp.y, proj)
+                const s = Math.min(2, proj.depth >> 12)
+                drawSprite(target, impFrames[impFrame(imp)][s], proj.depth, proj.screenX, proj.size, 85, ox, horizon)
+            }
+        }
+    }
+
+    function drawMap(target: Image, world: corridor.World): void {
+        const cell = Math.max(2, Math.min(5, Math.idiv(84, Math.max(world.w, world.h))))
+        const mw = world.w * cell
+        const mh = world.h * cell
+        const mx = (W - mw) >> 1
+        const my = ((VH - mh) >> 1) + 3
+        target.fillRect(mx - 3, my - 9, mw + 6, mh + 12, 8)
+        target.fillRect(mx - 2, my - 8, mw + 4, mh + 10, 15)
+        text(target, "MAP", mx, my - 7, 6, 1)
+        text(target, corridor.heading(world.ang), mx + mw - 3, my - 7, 4, 1)
+        for (let cy = 0; cy < world.h; cy++) {
+            for (let cx = 0; cx < world.w; cx++) {
+                const tile = corridor.tileAt(world, cx, cy)
+                let c = 12
+                if (tile == corridor.TILE_STONE) c = 7
+                else if (tile == corridor.TILE_BRICK) c = 10
+                else if (tile == corridor.TILE_EXIT) c = 4
+                target.fillRect(mx + cx * cell, my + cy * cell, cell, cell, c)
+            }
+        }
+        const dot = Math.max(1, cell - 2)
+        for (const item of world.items) {
+            if (item.taken) continue
+            const ix = mx + ((item.x * cell) >> 10) - (dot >> 1)
+            const iy = my + ((item.y * cell) >> 10) - (dot >> 1)
+            target.fillRect(ix, iy, dot, dot, item.kind == corridor.ITEM_HEALTH ? 1 : 5)
+        }
+        for (const imp of world.imps) {
+            if (imp.dead || !imp.sees) continue
+            const ix = mx + ((imp.x * cell) >> 10) - (dot >> 1)
+            const iy = my + ((imp.y * cell) >> 10) - (dot >> 1)
+            target.fillRect(ix, iy, dot, dot, 2)
+        }
+        const px = mx + ((world.x * cell) >> 10)
+        const py = my + ((world.y * cell) >> 10)
+        const dx = corridor.cos(world.ang)
+        const dy = corridor.sin(world.ang)
+        for (let i = 1; i <= cell * 2; i++) {
+            target.setPixel(px + ((dx * i) >> 10), py + ((dy * i) >> 10), 4)
+        }
+        target.fillRect(px - 1, py - 1, 3, 3, 1)
+    }
+
+    function faceFor(world: corridor.World, view: View): number {
+        if (world.lost) return FACE_DEAD
+        if (view.faceTime > 0) return view.face
+        if (world.health < 35) return FACE_HURT
+        return FACE_OK
+    }
+
+    function drawHud(target: Image, world: corridor.World, view: View): void {
+        const face = faceFor(world, view)
+        const dir = corridor.heading(world.ang)
+        const key = world.health + "," + world.ammo + "," + world.kills + "," + face + "," + dir
+        if (key != hudKey) {
+            hudKey = key
+            hud.fill(9)
+            hud.fillRect(0, 0, W, 1, 7)
+            hud.fillRect(0, 1, W, 1, 8)
+            text(hud, "HEALTH", 4, 3, 6, 1)
+            const hc = world.health > 50 ? 1 : world.health > 25 ? 4 : 2
+            text(hud, "" + world.health, 4, 9, hc, 2)
+            text(hud, "KILLS", 36, 3, 6, 1)
+            text(hud, world.kills + "/" + world.total, 36, 11, 1, 1)
+            hud.fillRect(70, 2, 20, 18, 15)
+            hud.drawTransparentImage(faces[face], 72, 3)
+            text(hud, "DIR", 96, 3, 6, 1)
+            text(hud, dir, 98, 9, 4, 2)
+            text(hud, "AMMO", 124, 3, 6, 1)
+            text(hud, "" + world.ammo, 124, 9, world.ammo > 0 ? 4 : 2, 2)
+        }
+        target.drawImage(hud, 0, VH)
+    }
+
+    function panel(target: Image, y: number, h: number, border: number): void {
+        target.fillRect(12, y, W - 24, h, border)
+        target.fillRect(14, y + 2, W - 28, h - 4, 15)
+    }
+
+    function drawOverlay(target: Image, world: corridor.World, view: View): void {
+        if (view.mode == MODE_TITLE) {
+            panel(target, 10, 80, 5)
+            centered(target, "CORRIDOR", 18, 4, 2)
+            centered(target, "PAD MOVE AND TURN", 36, 1, 1)
+            centered(target, "A FIRE   B MAP", 44, 1, 1)
+            centered(target, "HOLD B + PAD STRAFE", 52, 1, 1)
+            centered(target, "FIND THE YELLOW EXIT", 62, 4, 1)
+            centered(target, "PRESS A", 76, 2, 1)
+            return
+        }
+        if (!world.won && !world.lost) return
+        panel(target, 18, 64, world.won ? 4 : 2)
+        centered(target, world.won ? "EXIT!" : "YOU DIED", 26, world.won ? 4 : 2, 2)
+        centered(target, "KILLS " + world.kills + "/" + world.total, 44, 1, 1)
+        centered(target, "TIME " + Math.idiv(world.time, 1000) + "S", 52, 1, 1)
+        centered(target, "SCORE " + world.score, 60, 1, 1)
+        centered(target, "A PLAY AGAIN", 70, 6, 1)
+    }
+
+    export function bobPhase(world: corridor.World): number {
+        return Math.idiv((world.stride % (2 * corridor.STRIDE)) * 512, corridor.STRIDE)
+    }
+
+    export function draw(target: Image, world: corridor.World, view: View): void {
+        init()
+        target.fill(15)
+        let ox = 0
+        let oy = 0
+        if (view.shake > 0) {
+            const amp = view.shake > 120 ? 2 : 1
+            ox = ((world.time >> 5) & 1) == 1 ? amp : -amp
+            oy = ((world.time >> 6) & 1) == 1 ? amp : -amp
+        }
+        const phase = bobPhase(world)
+        const horizon = HORIZON + oy + ((Math.abs(corridor.sin(phase)) * 3) >> 11)
+        target.drawImage(backdrop, ox, horizon - HORIZON)
+
+        const step = view.colStep < 1 ? 1 : view.colStep
+        for (let col = 0; col < W; col += step) {
+            corridor.castColumn(world, col, hit)
+            const h = corridor.wallHeight(hit.dist)
+            const tex = walls[hit.tile][corridor.shadeFor(hit.dist, hit.side, hit.tile)]
+            const y0 = horizon - (h >> 1)
+            for (let k = 0; k < step && col + k < W; k++) {
+                zbuf[col + k] = hit.dist
+                target.blitRow(col + k + ox, y0, tex, hit.texX, h)
+            }
+        }
+
+        drawThings(target, world, ox, horizon)
+
+        if (!world.lost && view.mode == MODE_PLAY) {
+            const gx = 56 + ((corridor.cos(phase) * 5) >> 10)
+            const gy = 64 + ((Math.abs(corridor.sin(phase)) * 4) >> 10) + (view.recoil > 0 ? 5 : 0)
+            if (view.flash > 0) target.blit(gx + 12, gy - 16, 24, 20, muzzle, 0, 0, 12, 10, true, false)
+            target.blit(gx, gy, 48, 36, gun, 0, 0, 24, 18, true, false)
+        }
+
+        if (view.hurt > 0 || world.lost) {
+            target.fillRect(0, 0, W, 3, 2)
+            target.fillRect(0, VH - 3, W, 3, 2)
+            target.fillRect(0, 0, 3, VH, 2)
+            target.fillRect(W - 3, 0, 3, VH, 2)
+        } else if (view.pickup > 0) {
+            target.fillRect(0, 0, W, 1, 4)
+            target.fillRect(0, VH - 1, W, 1, 4)
+            target.fillRect(0, 0, 1, VH, 4)
+            target.fillRect(W - 1, 0, 1, VH, 4)
+        }
+
+        if (view.mapOpen && view.mode == MODE_PLAY) drawMap(target, world)
+        drawHud(target, world, view)
+        drawOverlay(target, world, view)
+        if (view.showFps) shadowText(target, view.fps + "FPS", 4, 4, 4, 1)
+    }
+
+    function decay(v: number, dt: number): number {
+        return v > dt ? v - dt : 0
+    }
+
+    // Turns game events into short-lived screen effects; sound and vibration live in main.ts.
+    export function react(view: View, events: string[]): void {
+        for (const ev of events) {
+            if (ev == "shoot") {
+                view.flash = 70
+                view.recoil = 110
+            } else if (ev == "hurt") {
+                view.hurt = 220
+                view.shake = Math.max(view.shake, 200)
+                view.face = FACE_HURT
+                view.faceTime = 500
+            } else if (ev == "hit") {
+                view.shake = Math.max(view.shake, 60)
+            } else if (ev == "kill") {
+                view.shake = Math.max(view.shake, 90)
+                view.face = FACE_GRIN
+                view.faceTime = 700
+            } else if (ev == "pickup") {
+                view.pickup = 160
+                view.face = FACE_GRIN
+                view.faceTime = 300
+            } else if (ev == "dead") {
+                view.shake = 300
+            }
+        }
+    }
+
+    export function tick(view: View, dt: number): void {
+        view.flash = decay(view.flash, dt)
+        view.recoil = decay(view.recoil, dt)
+        view.hurt = decay(view.hurt, dt)
+        view.shake = decay(view.shake, dt)
+        view.pickup = decay(view.pickup, dt)
+        view.faceTime = decay(view.faceTime, dt)
+        view.frames += 1
+        view.acc += dt
+        if (view.acc >= 1000) {
+            view.fps = Math.idiv(view.frames * 1000, view.acc)
+            view.frames = 0
+            view.acc = 0
+        }
+    }
+}

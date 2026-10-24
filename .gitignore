@@ -1,0 +1,8 @@
+node_modules/
+pxt_modules/
+built/
+.pxt/
+*.uf2
+demo/baseline/
+demo/after/
+demo/out/sheet-*.png
