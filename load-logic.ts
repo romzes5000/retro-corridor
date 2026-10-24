@@ -175,7 +175,7 @@ export interface Game {
     corridorRender: RenderApi
 }
 
-const FILES = ["art.ts", "logic.ts", "doors.ts", "enemies.ts", "levels.ts", "game.ts", "render.ts"]
+const FILES = ["art.ts", "logic.ts", "doors.ts", "enemies.ts", "levels.ts", "procgen.ts", "game.ts", "render.ts"]
 
 // One transpile over all files, like the MakeCode compiler: namespace members declared in another
 // file only get qualified (corridor.x) when TypeScript sees the merged namespace in the same unit.

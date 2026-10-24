@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --test logic.test.ts campaign.test.ts combat.test.ts feel.test.ts gfx.test.ts render.test.ts play.test.ts demo/make-gifs.test.ts",
+    "test": "node --experimental-strip-types --test logic.test.ts campaign.test.ts combat.test.ts feel.test.ts gfx.test.ts render.test.ts play.test.ts procgen.test.ts demo/make-gifs.test.ts",
     "demo": "node --experimental-strip-types demo/make-gifs.ts"
   },
   "devDependencies": {
