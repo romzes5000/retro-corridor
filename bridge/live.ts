@@ -208,13 +208,13 @@ const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Corridor - AI live</title>
 <style>
-  body { margin: 0; background: #111; color: #ddd; font: 14px/1.4 ui-monospace, Menlo, monospace; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
-  canvas { width: 640px; height: 480px; max-width: 100%; height: auto; aspect-ratio: 4 / 3; image-rendering: pixelated; background: #000; }
-  #side { flex: 1; min-width: 240px; }
-  #status { margin-bottom: 8px; }
+  body { margin: 0; background: #111; color: #ddd; font: 14px/1.4 ui-monospace, Menlo, monospace; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; padding: 16px; }
+  canvas { flex: none; width: 640px; max-width: 100%; height: auto; aspect-ratio: 4 / 3; image-rendering: pixelated; background: #000; }
+  #side { flex: 1; min-width: 240px; height: 480px; display: flex; flex-direction: column; overflow: hidden; }
+  #status { flex: none; margin-bottom: 8px; }
   #status.off { color: #e55; }
-  ol { list-style: none; margin: 0; padding: 0; }
-  li { padding: 2px 0; border-bottom: 1px solid #222; }
+  ol { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 0; }
+  li { padding: 2px 0; border-bottom: 1px solid #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   li.danger { color: #e55; }
 </style>
 </head>

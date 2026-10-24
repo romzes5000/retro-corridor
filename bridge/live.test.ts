@@ -168,6 +168,9 @@ test("сценарий: страница и поток — палитра, ка�
         assert.equal(page.status, 200)
         assert.match(page.body, /<canvas id="screen" width="160" height="120">/)
         assert.match(page.body, /new EventSource\("\/stream"\)/)
+        assert.match(page.body, /body \{[^}]*align-items: flex-start/, "лента не растягивает кадр по высоте")
+        assert.match(page.body, /#side \{[^}]*height: 480px;[^}]*overflow: hidden/, "лента не выше кадра")
+        assert.match(page.body, /ol \{[^}]*overflow-y: auto/)
         assert.equal((await get(`${watch.url}/healthz`)).body, "ok\n")
         assert.equal((await get(`${watch.url}/nope`)).status, 404)
 
