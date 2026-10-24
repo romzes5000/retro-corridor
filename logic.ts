@@ -20,6 +20,15 @@ namespace corridor {
     export const ITEM_AMMO = 1
     export const ITEM_KEY_RED = 2
     export const ITEM_KEY_BLUE = 3
+    export const ITEM_SHOTGUN = 4
+
+    export const WEAPON_PISTOL = 0
+    export const WEAPON_SHOTGUN = 1
+    export const SHOTGUN_AMMO = 2
+    export const SHOTGUN_COOLDOWN = 700
+    export const SHOTGUN_PICKUP = 6
+    // Pellet columns either side of the crosshair: 12 of 1024 angle units with this FOV.
+    export const SPREAD_COLS = 9
 
     export const KEY_RED = 1
     export const KEY_BLUE = 2
@@ -101,7 +110,7 @@ namespace corridor {
             this.hunting = false
             this.lastX = x
             this.lastY = y
-            this.hp = IMP_HP
+            this.hp = ENEMY_HP[kind]
             this.dead = false
             this.awake = false
             this.sees = false
@@ -130,11 +139,13 @@ namespace corridor {
         strafe: number
         turn: number
         fire: boolean
+        swap: boolean
         constructor() {
             this.fwd = 0
             this.strafe = 0
             this.turn = 0
             this.fire = false
+            this.swap = false
         }
     }
 
@@ -169,7 +180,13 @@ namespace corridor {
         secrets: number
         found: number
         lockedCool: number
+        shots: Shot[]
+        weapon: number
+        hasShotgun: boolean
         constructor() {
+            this.shots = []
+            this.weapon = WEAPON_PISTOL
+            this.hasShotgun = false
             this.doors = []
             this.doorIndex = []
             this.pushes = []
@@ -268,8 +285,11 @@ namespace corridor {
                 if (ch == "S") {
                     world.x = center(c)
                     world.y = center(r)
-                } else if (ch == "E") {
-                    world.enemies.push(new Enemy(ENEMY_IMP, center(c), center(r)))
+                } else if (kindOf(ch) >= 0) {
+                    world.enemies.push(new Enemy(kindOf(ch), center(c), center(r)))
+                    if (ch == "Z") world.exitLocked = true
+                } else if (ch == "G") {
+                    world.items.push(new Item(center(c), center(r), ITEM_SHOTGUN))
                 } else if (ch == "H") {
                     world.items.push(new Item(center(c), center(r), ITEM_HEALTH))
                 } else if (ch == "A") {
@@ -449,7 +469,7 @@ namespace corridor {
         for (const enemy of world.enemies) {
             if (enemy.dead) continue
             const next = distance(enemy.x, enemy.y, x, y)
-            if (next < TOUCH && next < distance(enemy.x, enemy.y, world.x, world.y)) return true
+            if (next < touchFor(enemy) && next < distance(enemy.x, enemy.y, world.x, world.y)) return true
         }
         return false
     }
@@ -496,26 +516,10 @@ namespace corridor {
         }
     }
 
-    function moveEnemy(world: World, enemy: Enemy, mx: number, my: number): void {
-        const r = IMP_RADIUS
-        const nx = enemy.x + mx
-        if (fits(world, nx, enemy.y, r)) {
-            if (distance(nx, enemy.y, world.x, world.y) >= TOUCH) enemy.x = nx
-        } else {
-            nudgeDoor(world, enemy.x + (mx > 0 ? r + 128 : -r - 128), enemy.y)
-        }
-        const ny = enemy.y + my
-        if (fits(world, enemy.x, ny, r)) {
-            if (distance(enemy.x, ny, world.x, world.y) >= TOUCH) enemy.y = ny
-        } else {
-            nudgeDoor(world, enemy.x, enemy.y + (my > 0 ? r + 128 : -r - 128))
-        }
-    }
-
-    // Nearest live enemy under the crosshair and in front of the wall, or -1.
-    export function target(world: World): number {
+    // Nearest live enemy under screen column `col` and in front of the wall, or -1.
+    export function targetAt(world: World, col: number): number {
         const hit = new Hit()
-        castColumn(world, VIEW_W >> 1, hit)
+        castColumn(world, col, hit)
         const p = new Proj()
         let best = -1
         let bestDepth = hit.dist
@@ -524,8 +528,8 @@ namespace corridor {
             if (enemy.dead) continue
             project(world, enemy.x, enemy.y, p)
             if (!p.visible || p.depth >= bestDepth) continue
-            const reach = Math.max(4, (p.size * 3) >> 3)
-            if (Math.abs(p.screenX - (VIEW_W >> 1)) <= reach) {
+            const reach = Math.max(4, Math.idiv(p.size * 3 * ENEMY_SIZE[enemy.kind], 8 * ENEMY_SIZE[ENEMY_IMP]))
+            if (Math.abs(p.screenX - col) <= reach) {
                 best = i
                 bestDepth = p.depth
             }
@@ -533,77 +537,62 @@ namespace corridor {
         return best
     }
 
+    // Nearest live enemy under the crosshair, or -1.
+    export function target(world: World): number {
+        return targetAt(world, VIEW_W >> 1)
+    }
+
+    export function damageEnemy(world: World, i: number, damage: number): void {
+        const enemy = world.enemies[i]
+        if (enemy.dead) return
+        enemy.hp -= damage
+        enemy.hurt = IMP_HURT_MS
+        enemy.awake = true
+        if (enemy.hp > 0) {
+            emit(world, "hit")
+            return
+        }
+        enemy.dead = true
+        world.kills += 1
+        world.score += ENEMY_SCORE[enemy.kind]
+        emit(world, "kill")
+        if (enemy.kind == ENEMY_BOSS) {
+            world.exitLocked = false
+            emit(world, "unlock")
+        }
+    }
+
+    // Shotgun pellet damage falls off with range: 3 point blank, 2 mid, 1 far.
+    export function pelletDamage(dist: number): number {
+        if (dist < 2 * FP) return 3
+        if (dist < 4 * FP) return 2
+        return 1
+    }
+
     function fire(world: World): void {
         if (world.fireCool > 0) return
-        if (world.ammo <= 0) {
-            world.fireCool = FIRE_COOLDOWN
+        const shotgun = world.weapon == WEAPON_SHOTGUN
+        const cost = shotgun ? SHOTGUN_AMMO : 1
+        const cool = shotgun ? SHOTGUN_COOLDOWN : FIRE_COOLDOWN
+        world.fireCool = cool
+        if (world.ammo < cost) {
             emit(world, "empty")
             return
         }
-        world.ammo -= 1
-        world.fireCool = FIRE_COOLDOWN
-        emit(world, "shoot")
-        const i = target(world)
-        if (i < 0) return
-        const enemy = world.enemies[i]
-        enemy.hp -= 1
-        enemy.hurt = IMP_HURT_MS
-        enemy.awake = true
-        if (enemy.hp <= 0) {
-            enemy.dead = true
-            world.kills += 1
-            world.score += 100
-            emit(world, "kill")
-        } else {
-            emit(world, "hit")
-        }
-    }
-
-    function thinkEnemy(world: World, enemy: Enemy, dt: number): void {
-        if (enemy.cool > 0) enemy.cool -= dt
-        if (enemy.hurt > 0) enemy.hurt -= dt
-        if (enemy.attack > 0) enemy.attack -= dt
-        const d = distance(enemy.x, enemy.y, world.x, world.y)
-        enemy.sees = d < IMP_SIGHT && canSee(world, enemy.x, enemy.y, world.x, world.y)
-        if (!enemy.sees) {
-            if (enemy.hunting && enemy.hurt <= 0) chase(enemy, enemy.lastX, enemy.lastY, dt, world)
+        world.ammo -= cost
+        if (!shotgun) {
+            emit(world, "shoot")
+            const i = target(world)
+            if (i >= 0) damageEnemy(world, i, 1)
             return
         }
-        enemy.hunting = true
-        enemy.lastX = world.x
-        enemy.lastY = world.y
-        if (!enemy.awake) {
-            enemy.awake = true
-            emit(world, "alert")
+        emit(world, "blast")
+        for (let k = -1; k <= 1; k++) {
+            const i = targetAt(world, (VIEW_W >> 1) + k * SPREAD_COLS)
+            if (i < 0) continue
+            const enemy = world.enemies[i]
+            damageEnemy(world, i, pelletDamage(distance(enemy.x, enemy.y, world.x, world.y)))
         }
-        if (d <= IMP_REACH) {
-            if (enemy.cool <= 0) {
-                enemy.cool = IMP_COOLDOWN
-                enemy.attack = IMP_ATTACK_MS
-                world.health -= IMP_DAMAGE
-                emit(world, "hurt")
-                if (world.health <= 0) {
-                    world.health = 0
-                    world.lost = true
-                    emit(world, "dead")
-                }
-            }
-            return
-        }
-        if (enemy.hurt > 0) return
-        chase(enemy, world.x, world.y, dt, world)
-    }
-
-    // Walks toward a point; once the last sighting is reached the enemy gives up the hunt.
-    function chase(enemy: Enemy, tx: number, ty: number, dt: number, world: World): void {
-        const d = distance(enemy.x, enemy.y, tx, ty)
-        if (d < 160) {
-            enemy.hunting = enemy.sees
-            return
-        }
-        const step = Math.idiv(IMP_SPEED * dt, 1000)
-        moveEnemy(world, enemy, Math.idiv((tx - enemy.x) * step, d), Math.idiv((ty - enemy.y) * step, d))
-        enemy.walk += step
     }
 
     function pickUp(world: World): void {
@@ -619,11 +608,16 @@ namespace corridor {
                 world.keys |= KEY_RED
             } else if (item.kind == ITEM_KEY_BLUE) {
                 world.keys |= KEY_BLUE
+            } else if (item.kind == ITEM_SHOTGUN) {
+                world.hasShotgun = true
+                world.weapon = WEAPON_SHOTGUN
+                world.ammo += SHOTGUN_PICKUP
             }
             item.taken = true
             world.itemsTaken += 1
             world.score += 10
-            emit(world, item.kind >= ITEM_KEY_RED && item.kind <= ITEM_KEY_BLUE ? "key" : "pickup")
+            if (item.kind == ITEM_SHOTGUN) emit(world, "weapon")
+            else emit(world, item.kind >= ITEM_KEY_RED && item.kind <= ITEM_KEY_BLUE ? "key" : "pickup")
         }
     }
 
@@ -661,6 +655,10 @@ namespace corridor {
             }
         }
 
+        if (input.swap && world.hasShotgun) {
+            world.weapon = world.weapon == WEAPON_SHOTGUN ? WEAPON_PISTOL : WEAPON_SHOTGUN
+            emit(world, "swap")
+        }
         if (input.fire && world.fireCool <= 0) {
             if (useAhead(world)) world.fireCool = USE_COOLDOWN
             else fire(world)
@@ -669,6 +667,8 @@ namespace corridor {
             if (!enemy.dead) thinkEnemy(world, enemy, dt)
             if (world.lost) return
         }
+        updateShots(world, dt)
+        if (world.lost) return
         pickUp(world)
     }
 
@@ -690,6 +690,10 @@ namespace corridor {
         bStrafed: boolean
         tapA: boolean
         tapB: boolean
+        tapB2: boolean
+        bPending: boolean
+        bUp: number
+        bDouble: boolean
         dirsWas: number
         tapDirs: number
         constructor() {
@@ -702,11 +706,16 @@ namespace corridor {
             this.bStrafed = false
             this.tapA = false
             this.tapB = false
+            this.tapB2 = false
+            this.bPending = false
+            this.bUp = 0
+            this.bDouble = false
         }
     }
 
-    // Buttons -> Input. Holding B turns left/right into strafe; a quick B tap with no strafe sets
-    // tapB (map toggle). A held over a screen change (aLatch) does not fire until released.
+    // Buttons -> Input. Holding B turns left/right into strafe. A quick B tap sets tapB (map) only
+    // MAP_TAP_MS after release, so a second tap inside that window can become tapB2 (weapon swap).
+    // A held over a screen change (aLatch) does not fire until released.
     export function readPad(pad: Pad, input: Input, now: number, up: boolean, down: boolean,
         left: boolean, right: boolean, a: boolean, b: boolean): void {
         pad.tapA = a && !pad.aWas
@@ -715,7 +724,10 @@ namespace corridor {
         input.fire = a && !pad.aLatch
         const lr = (right ? 1 : 0) - (left ? 1 : 0)
         pad.tapB = false
+        pad.tapB2 = false
         if (b && !pad.bWas) {
+            pad.bDouble = pad.bPending && now - pad.bUp < MAP_TAP_MS
+            pad.bPending = false
             pad.bStart = now
             pad.bStrafed = false
         }
@@ -726,8 +738,20 @@ namespace corridor {
         } else {
             input.strafe = 0
             input.turn = lr
-            if (pad.bWas && !pad.bStrafed && now - pad.bStart < MAP_TAP_MS) pad.tapB = true
+            if (pad.bWas && !pad.bStrafed && now - pad.bStart < MAP_TAP_MS) {
+                if (pad.bDouble) {
+                    pad.tapB2 = true
+                } else {
+                    pad.bPending = true
+                    pad.bUp = now
+                }
+            }
+            if (pad.bPending && now - pad.bUp >= MAP_TAP_MS) {
+                pad.bPending = false
+                pad.tapB = true
+            }
         }
+        input.swap = pad.tapB2
         pad.bWas = b
         input.fwd = (up ? 1 : 0) - (down ? 1 : 0)
         const dirs = (up ? DIR_UP : 0) | (down ? DIR_DOWN : 0) | (left ? DIR_LEFT : 0) | (right ? DIR_RIGHT : 0)

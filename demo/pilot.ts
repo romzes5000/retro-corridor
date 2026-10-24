@@ -164,6 +164,29 @@ export class Pilot {
         if (door && (door.state === api.DOOR_CLOSED || door.state === api.DOOR_CLOSING)) input.fire = true
     }
 
+    // Side step (+1 right, -1 left, 0 none) that takes the player off the line of an incoming fireball.
+    dodge(world: World): number {
+        const api = this.api
+        const lane = api.PLAYER_RADIUS + api.SHOT_RADIUS + 200
+        for (const shot of world.shots) {
+            const rx = world.x - shot.x
+            const ry = world.y - shot.y
+            const along = rx * shot.vx + ry * shot.vy
+            if (along <= 0 || Math.hypot(rx, ry) > 2.5 * api.FP) continue
+            const v2 = shot.vx * shot.vx + shot.vy * shot.vy
+            const px = rx - (along / v2) * shot.vx
+            const py = ry - (along / v2) * shot.vy
+            if (Math.hypot(px, py) > lane) continue
+            const rightX = -api.sin(world.ang)
+            const rightY = api.cos(world.ang)
+            let dir = px * rightX + py * rightY >= 0 ? 1 : -1
+            const probe = (d: number) => api.fits(world, world.x + rightX * d * 0.6, world.y + rightY * d * 0.6, api.PLAYER_RADIUS)
+            if (!probe(dir)) dir = -dir
+            return probe(dir) ? dir : 0
+        }
+        return 0
+    }
+
     private aim(world: World, input: Input, ang: number, tolerance: number): boolean {
         const diff = angleDiff(this.api, world.ang, ang)
         if (Math.abs(diff) > tolerance) input.turn = diff > 0 ? 1 : -1
@@ -183,6 +206,11 @@ export class Pilot {
         this.elapsed += dt
         switch (task.kind) {
             case "goto": {
+                const side = this.dodge(world)
+                if (side !== 0) {
+                    input.strafe = side
+                    return input
+                }
                 const tx = centre(api, task.cell[0])
                 const ty = centre(api, task.cell[1])
                 if (api.distance(world.x, world.y, tx, ty) < ARRIVE) {
@@ -224,8 +252,15 @@ export class Pilot {
                     this.finish()
                     return input
                 }
+                const side = this.dodge(world)
+                if (side !== 0) {
+                    input.strafe = side
+                    input.fire = api.target(world) === task.enemy
+                    return input
+                }
                 const onTarget = this.aim(world, input, angleTo(api, world, enemy.x, enemy.y), AIM)
                 input.fire = onTarget && api.target(world) === task.enemy
+                if (onTarget && !input.fire) input.fwd = 1
                 return input
             }
             case "map":
@@ -240,6 +275,35 @@ export class Pilot {
     }
 }
 
+function itemCell(item: { x: number; y: number }): Cell {
+    return [item.x >> 10, item.y >> 10]
+}
+
+// Side trips a player would make first: pick up the shotgun, grab a medkit when hurt or ammo when
+// low, and hunt
+// the boss while it keeps the exit locked.
+function detours(api: LogicApi, world: World, at: Cell): Cell[] {
+    const out: Cell[] = []
+    const reachable = (c: Cell) => findPath(api, world, at, c).length > 0
+    const gun = world.items.find((it) => !it.taken && it.kind === api.ITEM_SHOTGUN)
+    if (gun && reachable(itemCell(gun))) out.push(itemCell(gun))
+    if (world.health < 60) {
+        const kits = world.items.filter((it) => !it.taken && it.kind === api.ITEM_HEALTH)
+            .map(itemCell).filter(reachable)
+            .sort((a, b) => findPath(api, world, at, a).length - findPath(api, world, at, b).length)
+        if (kits.length > 0) out.push(kits[0])
+    }
+    if (world.ammo < 30) {
+        const boxes = world.items.filter((it) => !it.taken && it.kind === api.ITEM_AMMO)
+            .map(itemCell).filter(reachable)
+            .sort((a, b) => findPath(api, world, at, a).length - findPath(api, world, at, b).length)
+        if (boxes.length > 0) out.push(boxes[0])
+    }
+    const boss = world.enemies.find((e) => !e.dead && e.kind === api.ENEMY_BOSS)
+    if (boss && world.exitLocked && reachable(itemCell(boss))) out.push(itemCell(boss))
+    return out
+}
+
 // Level-solving strategy for feature tests and demos: fetch the keys the route needs, walk to the
 // exit, and stop to shoot any enemy that has spotted the player and is close enough to matter.
 export function fightingPilot(api: LogicApi, world: World, exit?: Cell, exitAng?: number): (dt: number) => Input {
@@ -249,7 +313,7 @@ export function fightingPilot(api: LogicApi, world: World, exit?: Cell, exitAng?
         walker.tasks.length = 0
         let at: Cell = [world.x >> 10, world.y >> 10]
         let keys = world.keys
-        const points = planRoute(api, world, at, spot.cell) ?? [spot.cell]
+        const points = [...detours(api, world, at), ...(planRoute(api, world, at, spot.cell) ?? [spot.cell])]
         for (const p of points) {
             walker.route(world, p, at, keys)
             const item = world.items.find((it) => !it.taken && it.x >> 10 === p[0] && it.y >> 10 === p[1])
@@ -261,11 +325,12 @@ export function fightingPilot(api: LogicApi, world: World, exit?: Cell, exitAng?
     plan()
     let fighter: Pilot | null = null
     return (dt: number) => {
-        if (fighter && fighter.done) {
+        const armed = world.ammo >= (world.weapon === api.WEAPON_SHOTGUN ? api.SHOTGUN_AMMO : 1)
+        if (fighter && (fighter.done || !armed)) {
             fighter = null
             plan()
         }
-        if (!fighter) {
+        if (!fighter && armed) {
             const threat = world.enemies.findIndex((enemy) => !enemy.dead && enemy.sees
                 && api.distance(enemy.x, enemy.y, world.x, world.y) < 6 * api.FP)
             if (threat >= 0) fighter = new Pilot(api, [{ kind: "fire", enemy: threat, ms: 4000 }])

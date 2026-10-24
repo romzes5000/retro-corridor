@@ -71,7 +71,7 @@ namespace corridor {
     export function doorOccupied(world: World, door: Door): boolean {
         if (overlaps(world.x, world.y, PLAYER_RADIUS, door.cx, door.cy)) return true
         for (const enemy of world.enemies) {
-            if (!enemy.dead && overlaps(enemy.x, enemy.y, IMP_RADIUS, door.cx, door.cy)) return true
+            if (!enemy.dead && overlaps(enemy.x, enemy.y, ENEMY_RADIUS[enemy.kind], door.cx, door.cy)) return true
         }
         return false
     }

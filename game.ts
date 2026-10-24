@@ -42,6 +42,8 @@ namespace corridor {
         ammo: number
         entryHealth: number
         entryAmmo: number
+        entryShotgun: boolean
+        entryWeapon: number
         kills: number
         total: number
         time: number
@@ -53,6 +55,8 @@ namespace corridor {
             this.ammo = START_AMMO
             this.entryHealth = 100
             this.entryAmmo = START_AMMO
+            this.entryShotgun = false
+            this.entryWeapon = WEAPON_PISTOL
             this.kills = 0
             this.total = 0
             this.time = 0
@@ -72,12 +76,15 @@ namespace corridor {
         return currentLevel(session).name
     }
 
-    // Builds the world for the session's current level with the stock the player entered it with.
+    // Builds the world for the session's current level with the stock (health, ammo, weapons) the
+    // player entered it with.
     export function enterLevel(session: Session): World {
         const level = currentLevel(session)
         const world = createWorld(level.map, level.ang)
         world.health = session.entryHealth
         world.ammo = session.entryAmmo
+        world.hasShotgun = session.entryShotgun
+        world.weapon = session.entryWeapon
         return world
     }
 
@@ -94,6 +101,8 @@ namespace corridor {
         session.ammo = world.ammo
         session.entryHealth = world.health
         session.entryAmmo = world.ammo
+        session.entryShotgun = world.hasShotgun
+        session.entryWeapon = world.weapon
         session.level += 1
         return session.kind == RUN_ENDLESS || session.level < levelCount(session)
     }

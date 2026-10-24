@@ -110,6 +110,6 @@ test("пилот проходит кампанию из трёх уровней 
         more = api.completeLevel(session, world)
     }
     assert.equal(session.level, 3)
-    assert.ok(seen.has("key") && seen.has("door"), `события ${[...seen]}`)
+    for (const ev of ["key", "door", "weapon", "blast", "fireball", "unlock"]) assert.ok(seen.has(ev), `нет «${ev}» среди ${[...seen]}`)
     assert.ok(session.kills >= 3)
 })

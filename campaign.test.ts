@@ -183,7 +183,7 @@ test("итоги: проценты убийств, предметов и тай�
     assert.equal(api.pct(0, 0), 100, "нечего искать — значит, всё найдено")
     for (const level of api.LEVELS) {
         const world = createWorld(level.map, level.ang)
-        const pickups = level.map.join("").replace(/[^HArb]/g, "").length
+        const pickups = level.map.join("").replace(/[^HArbG]/g, "").length
         assert.equal(world.itemsTotal, pickups, level.name)
         assert.equal(world.secrets, level.map.join("").replace(/[^P]/g, "").length, level.name)
         assert.ok(world.secrets >= 1, `${level.name}: есть тайник`)
