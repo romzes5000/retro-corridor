@@ -26,6 +26,7 @@ test("каждый GIF не больше 2 МБ и сценарий доигры
         "08-melt-summary": (w) => w.w === 20 && !w.won,
         "09-floor-light": (w) => w.light.some((v: number) => v > 0) && w.lava.some((v: number) => v > 0),
         "10-endless": (w) => w.w === 24 && w.h === 24,
+        "11-boss-fight": (w) => w.won && w.enemies.length === 1 && w.enemies[0].kind === 3 && w.enemies[0].dead,
     }
     for (const scenario of SCENARIOS) {
         const rec = record(scenario)
