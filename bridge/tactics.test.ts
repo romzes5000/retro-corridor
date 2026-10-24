@@ -227,6 +227,41 @@ test("память: ушедший за угол враг в last_seen 5 с, п�
     assert.equal(memory.last.size, 0, "убитый")
 })
 
+test("босс за красной и синей дверями: сначала красный ключ, с ним синий, с обоими — к боссу", () => {
+    const map = [
+        "###########",
+        "#S..r#....#",
+        "#....R..b.#",
+        "######D####",
+        "#....Z....#",
+        "###########",
+    ]
+    const world = api.createWorld(map, 0)
+    const spawn: [number, number] = [world.enemies[0].x >> 10, world.enemies[0].y >> 10]
+    const memory = new Memory()
+    memory.observe("1:3:0", api, world, 0, [spawn])
+    let sit = situate(api, world, memory)
+    assert.deepEqual([sit.goal, sit.goalCell], ["key", [4, 1]], "без ключей к боссу пути нет — идём за красным")
+    assert.ok(sit.path.length > 1 && sit.next, "есть куда идти, не WAIT")
+    assert.notEqual(decide(api, world, sit, "advance").cmd, CMD.wait)
+    world.keys = api.KEY_RED
+    sit = situate(api, world, memory)
+    assert.deepEqual([sit.goal, sit.goalCell], ["key", [8, 2]])
+    world.keys = api.KEY_RED | api.KEY_BLUE
+    sit = situate(api, world, memory)
+    assert.deepEqual([sit.goal, sit.goalCell, sit.bossSource], ["boss", spawn, "spawn"])
+})
+
+test("сценарий: на глубине D10 босс за цветными дверями — мост ведёт за ключами, а не стоит", async () => {
+    const sim = new SimConsole(9, api.DIFF_NORMAL, 5, false, true)
+    const bridge = new Bridge(sim.api, sim, always("advance"), () => {}, () => sim.clock)
+    while (sim.clock < 30000 && !sim.result && sim.world.keys === 0) {
+        sim.step()
+        await bridge.idle()
+    }
+    assert.notEqual(sim.world.keys, 0, "ключ взят за 30 с")
+})
+
 test("босс за стеной: идём к месту последней встречи, без неё — к точке появления; невидимого не атакуем", () => {
     const map = ["#########", "#S......#", "#.#####.#", "#...Z...#", "#########"]
     const world = api.createWorld(map, 0)

@@ -274,6 +274,13 @@ export function situate(api: LogicApi, world: World, memory: Memory = new Memory
                 bossAgeMs = look.ageMs
             }
         }
+        if (goalCell && pathTo(api, world, at, goalCell).length === 0) {
+            const route = planRoute(api, world, at, goalCell)
+            if (route && route.length > 1) {
+                goalCell = route[0]
+                goal = "key"
+            }
+        }
     } else if (exit) {
         const route = planRoute(api, world, at, exit.spot)
         goalCell = route ? route[0] : exit.spot
