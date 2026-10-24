@@ -1,0 +1,80 @@
+# Corridor
+
+A Doom-style raycaster for MakeCode Arcade consoles on the STM32F401 (tested on the ELECFREAKS Retro
+Arcade: 160×120 screen, 84 MHz Cortex-M4, 96 KB RAM). Written in MakeCode Static TypeScript with
+fixed-point math, no floats in the hot loop.
+
+![Before and after](demo/out/01-before-after.gif)
+
+| | |
+|---|---|
+| ![Key and door](demo/out/06-key-door.gif) | ![Shotgun against shooters](demo/out/07-shotgun-shooter.gif) |
+| ![Level summary and melt](demo/out/08-melt-summary.gif) | ![Floor, light and lava](demo/out/09-floor-light.gif) |
+| ![Endless mode](demo/out/10-endless.gif) | ![Imp fight](demo/out/03-imp-fight.gif) |
+
+## What is in it
+
+- **Campaign** of three hand-made levels: hangar, warehouse, arena with a boss. Red and blue keys,
+  sliding doors, secret walls, level summary (kills, items, secrets, time) and a Doom-style melt between
+  screens.
+- **Endless mode**: depth N is a 24×24 maze generated from seed N, with rooms, keyed doors placed on
+  the only way to the exit (the key is always on your side of its door), lava, and more and tougher
+  enemies the deeper you go. A boss guards every fifth depth.
+- **Enemies**: imp, fireball shooter that keeps its distance, fast knight, boss with a fan of
+  fireballs. Death animations, blood and scorch decals, growls from behind corners.
+- **Weapons**: pistol and shotgun (spread, damage falls off with range).
+- **Rendering**: textured walls, doors and floor, per-cell light with flickering lamps, lava, sprites
+  sorted against a z-buffer, automap. A quality ladder steps down (floor 2×2 → floor bands → 80 rays)
+  after 3 s below 20 FPS.
+- **Feel**: distance-attenuated sound, music, pause menu, difficulty (easy / normal / hard), records
+  saved on the console.
+
+## Controls
+
+| Button | Action |
+|---|---|
+| D-pad | Walk and turn |
+| A | Fire, open doors |
+| B + left/right | Strafe |
+| B tap | Automap |
+| B double tap | Switch weapon |
+| B hold | Pause menu (music, difficulty, quit) |
+| Menu | System menu of the console |
+
+## Build and flash
+
+```bash
+npm ci
+npm test               # unit and feature tests in Node (logic, render, pilot playthroughs)
+npx makecode build     # -> built/stm32f401/binary.uf2
+npm run demo           # re-renders demo/out/*.gif from scripted runs of the real game code
+```
+
+Prebuilt `corridor.uf2` is attached to each [release](https://github.com/romzes5000/retro-corridor/releases).
+To flash: connect the console over USB, double-press Reset until the `ARCADE-F4` drive appears, copy
+the UF2 onto it. The console reboots into the game.
+
+The game logs `fps N qQ step S` to the console once every 5 s (readable over HF2), handy for checking
+performance on real hardware.
+
+## Layout
+
+| File | What |
+|---|---|
+| `logic.ts` | World, ray casting, movement, combat, input gestures |
+| `doors.ts`, `enemies.ts` | Doors and keys; enemy kinds, AI, fireballs |
+| `levels.ts`, `procgen.ts` | Campaign maps; endless-mode generator |
+| `game.ts` | Sessions, menus, difficulty, records |
+| `render.ts`, `art.ts` | Renderer and all art (drawn in code) |
+| `main.ts` | Device glue: loop, sound, music, settings |
+| `demo/` | Pilot bot, GIF recorder, legacy renderer for the before/after clip |
+
+## Disclaimer
+
+Corridor is a fan homage to the 1993 game DOOM. It is not affiliated with, endorsed by or connected
+to id Software, ZeniMax or Bethesda. DOOM is a trademark of id Software LLC. No code, graphics, sounds
+or levels from DOOM are used: all art, maps and music in this repository are original.
+
+## License
+
+[MIT](LICENSE)

@@ -29,18 +29,79 @@ interface Run {
     drive: (dt: number) => Input
     done: () => boolean
     mapOpen?: () => boolean
+    // Called after each frame; a returned view replaces the current one (screen change).
+    step?: (t: number, view: View, img: FakeImage) => View | void
 }
 
 export interface Scenario {
     name: string
     legacy?: string[]
+    tag?: string
     maxMs: number
     tailMs: number
     build: (game: Game) => Run
 }
 
 function calm(map: string[]): string[] {
-    return map.map((row) => row.replace(/E/g, "."))
+    return map.map((row) => row.replace(/[EFKZ]/g, "."))
+}
+
+function litLevel(game: Game, index: number, quiet: boolean): World {
+    const level = game.corridor.LEVELS[index]
+    const world = game.corridor.createWorld(quiet ? calm([...level.map]) : level.map, level.ang)
+    game.corridor.setLights(world, level.lights)
+    return world
+}
+
+// Shows the generated maze on the automap first, then plays it with the fighting pilot.
+function endless(game: Game, depth: number): Run {
+    const api = game.corridor
+    const session = api.startSession(api.RUN_ENDLESS, api.DIFF_NORMAL)
+    session.level = depth - 1
+    const world = api.enterLevel(session)
+    const peek = new Pilot(api, [{ kind: "wait", ms: 300 }, { kind: "map", open: true }, { kind: "wait", ms: 1600 }, { kind: "map", open: false }])
+    const fight = fightingPilot(api, world)
+    return {
+        world,
+        drive: (dt) => (peek.done ? fight(dt) : peek.next(world, dt)),
+        done: () => world.won || world.lost,
+        mapOpen: () => peek.mapOpen,
+    }
+}
+
+// Walks into the hangar exit, holds the summary, then melts into the warehouse.
+function meltSummary(game: Game): Run {
+    const api = game.corridor
+    const r = game.corridorRender
+    const session = api.startSession(api.RUN_CAMPAIGN, api.DIFF_NORMAL)
+    const first = api.enterLevel(session)
+    first.enemies = []
+    placeAt(first, [9, 14], 0)
+    let pilot = new Pilot(api, [{ kind: "wait", ms: 300 }, { kind: "goto", cell: [14, 14] }, { kind: "face", ang: 0 }, { kind: "push", ms: 1500 }])
+    let wonAt = -1
+    let melted = false
+    const run: Run = {
+        world: first,
+        drive: (dt) => pilot.next(run.world, dt),
+        done: () => melted && pilot.done,
+        mapOpen: () => false,
+        step: (t, view, img) => {
+            if (!first.won || melted) return
+            if (wonAt < 0) wonAt = t
+            view.session = session
+            if (t - wonAt < 1800) return
+            api.completeLevel(session, first)
+            run.world = api.enterLevel(session)
+            pilot = new Pilot(api, [{ kind: "wait", ms: 1400 }, { kind: "turn", dir: 1, ms: 500 }, { kind: "wait", ms: 300 }])
+            melted = true
+            const next: View = new r.View()
+            next.mode = r.MODE_PLAY
+            next.session = session
+            r.startMelt(next, img as never, t)
+            return next
+        },
+    }
+    return run
 }
 
 function placeAt(world: World, cell: Cell, ang: number): void {
@@ -160,6 +221,67 @@ export const SCENARIOS: Scenario[] = [
             return { ...scripted(game, world, pilot), done: () => world.won }
         },
     },
+    {
+        name: "06-key-door",
+        maxMs: 18000,
+        tailMs: 800,
+        build: (game) => {
+            const world = litLevel(game, 1, true)
+            placeAt(world, [15, 2], 0)
+            const pilot = new Pilot(game.corridor, [{ kind: "wait", ms: 300 }])
+            pilot.route(world, [18, 1])
+            pilot.route(world, [8, 7], [18, 1], game.corridor.KEY_RED)
+            pilot.tasks.push({ kind: "faceCell", cell: [10, 8] }, { kind: "wait", ms: 500 })
+            return scripted(game, world, pilot)
+        },
+    },
+    {
+        name: "07-shotgun-shooter",
+        maxMs: 16000,
+        tailMs: 1200,
+        build: (game) => {
+            const api = game.corridor
+            const world = api.createWorld([
+                "#################",
+                "#.............F.#",
+                "#S.G............#",
+                "#.........F.....#",
+                "#...............X",
+                "#################",
+            ], 0)
+            world.ammo = 4
+            const drive = fightingPilot(api, world)
+            return { world, drive, done: () => world.enemies.every((e) => e.dead) }
+        },
+    },
+    {
+        name: "08-melt-summary",
+        maxMs: 9000,
+        tailMs: 200,
+        build: meltSummary,
+    },
+    {
+        name: "09-floor-light",
+        maxMs: 14000,
+        tailMs: 300,
+        build: (game) => {
+            const world = litLevel(game, 2, true)
+            placeAt(world, [11, 3], 256)
+            const pilot = new Pilot(game.corridor, [{ kind: "wait", ms: 300 }])
+            pilot.route(world, [8, 7])
+            pilot.tasks.push({ kind: "faceCell", cell: [14, 8] }, { kind: "wait", ms: 900 })
+            pilot.route(world, [9, 13], [8, 7])
+            pilot.tasks.push({ kind: "faceCell", cell: [12, 14] }, { kind: "wait", ms: 900 }, { kind: "turn", dir: 1, ms: 700 }, { kind: "wait", ms: 400 })
+            return scripted(game, world, pilot)
+        },
+    },
+    {
+        name: "10-endless",
+        tag: "DEPTH 3",
+        maxMs: 15000,
+        tailMs: 0,
+        build: (game) => endless(game, 3),
+    },
 ]
 
 function label(game: Game, img: FakeImage, s: string, c: number): void {
@@ -183,13 +305,14 @@ export interface Recording {
     frames: Frame[]
     palette: number[][]
     world: World
+    melted: boolean
 }
 
 export function record(scenario: Scenario, game: Game = loadGame()): Recording {
     const c = game.corridor
     const r = game.corridorRender
     const run = scenario.build(game)
-    const view: View = new r.View()
+    let view: View = new r.View()
     view.mode = r.MODE_PLAY
     const startImps = run.world.enemies.map((enemy): [number, number] => [enemy.x >> 10, enemy.y >> 10])
     const lw = scenario.legacy ? legacyWorld(scenario.legacy, 1) : null
@@ -197,13 +320,21 @@ export function record(scenario: Scenario, game: Game = loadGame()): Recording {
     const img = new FakeImage(160, 120)
     const old = new FakeImage(160, 120)
     let endAt = -1
+    let melted = false
     for (let t = 0; t < scenario.maxMs; t += DT) {
-        const input = run.drive(DT)
-        c.update(run.world, input, DT)
-        r.react(view, run.world.events)
+        if (!view.meltOn) {
+            const input = run.drive(DT)
+            c.update(run.world, input, DT)
+            r.react(view, run.world.events)
+        }
         r.tick(view, DT)
+        r.meltTick(view, DT)
         view.mapOpen = run.mapOpen ? run.mapOpen() : false
         r.draw(img as never, run.world, view)
+        if (scenario.tag) label(game, img, scenario.tag, 4)
+        const next = run.step?.(t, view, img)
+        if (next) view = next
+        melted = melted || view.meltOn
         if (lw) {
             syncLegacy(game, lw, run.world, startImps)
             drawLegacy(old, lw)
@@ -223,7 +354,7 @@ export function record(scenario: Scenario, game: Game = loadGame()): Recording {
     }
     const palette = rgbList(game.corridorArt.PALETTE)
     if (lw) palette.push(...rgbList(DEFAULT_PALETTE))
-    return { frames, palette, world: run.world }
+    return { frames, palette, world: run.world, melted }
 }
 
 export function frameHash(frame: Frame): string {
