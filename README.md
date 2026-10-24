@@ -118,8 +118,11 @@ between is interpolated, and shots, hits, kills and pickups are inferred from wh
 
 To watch live, add `--watch` and open `http://localhost:8787`. The bridge renders the same
 reconstruction as the film as snapshots arrive, 300 ms behind the console (it needs the next
-snapshot to interpolate towards), and streams 25 frames per second to the page with Jev's decisions
-next to the picture. `NO SIGNAL` means no snapshot for 1.5 s. `--watch-port` changes the port;
+snapshot to interpolate towards), and streams 25 frames per second to the page. Next to the picture:
+the level, health, weapon and kills, wins and deaths, Jev's decision count, latency and cost, how often
+the forced heal, the watchdog and a lesson stepped in, the console fps, the lessons (those of the
+current level first, the one in force highlighted) and a feed of Jev's decisions with deaths, wins,
+new lessons and overrides in colour. `NO SIGNAL` means no snapshot for 1.5 s. `--watch-port` changes the port;
 `--watch-host 0.0.0.0` opens it to the local network, for a phone. Works with `--sim` too.
 
 ### Lessons after a death

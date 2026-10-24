@@ -22,8 +22,8 @@ import { fakeJev } from "./fake-jev.ts"
 import { FilmRecorder } from "./film.ts"
 import { Hf2Transport } from "./hf2.ts"
 import { jevModel, makeJev, type JevFn } from "./jev.ts"
-import { LessonStore, lessonsFile, lessonsOn, makeReflect, type Lesson, type LessonFlags, type ReflectFn } from "./lessons.ts"
-import { LivePlayer, startWatch, WATCH_PORT, type Watch } from "./live.ts"
+import { learnedLine, lessonLine, LessonStore, lessonsFile, lessonsOn, makeReflect, type LessonFlags, type ReflectFn } from "./lessons.ts"
+import { LiveBoard, LivePlayer, startWatch, WATCH_PORT, type Watch } from "./live.ts"
 import { addStats, Bridge, emptyStats, percentile, type BridgeOptions, type LogRecord, type Stats } from "./loop.ts"
 import { isBox } from "./mailbox.ts"
 import { recording, SIM_DT, SimConsole, simLevels, type SimLevel } from "./sim.ts"
@@ -43,9 +43,19 @@ interface WatchFlags {
     host: string
 }
 
+interface Recording {
+    // Every console line and every bridge log record.
+    line(raw: string): void
+    record(rec: LogRecord): void
+    // The bridge whose counters the live page shows; a sim bench has a new one per run.
+    attach(stats: () => Stats): void
+    close(): Promise<void>
+}
+
 // --film writes every snapshot and decision to bridge/out/film-*.jsonl for `npm run ai:film`;
-// --watch plays the same records live in a browser. Null when neither is on.
-async function openRecording(filming: boolean, watch: WatchFlags | null): Promise<{ recorder: FilmRecorder; close: () => Promise<void> } | null> {
+// --watch plays the same records live in a browser, with the counters, the lessons and a feed of
+// events next to the picture. Null when neither is on.
+async function openRecording(filming: boolean, watch: WatchFlags | null, store: LessonStore | null): Promise<Recording | null> {
     if (!filming && !watch) return null
     let fd: number | null = null
     if (filming) {
@@ -55,18 +65,35 @@ async function openRecording(filming: boolean, watch: WatchFlags | null): Promis
         console.log(`film ${file} (npm run ai:film -- ${path.relative(process.cwd(), file)})`)
     }
     let live: LivePlayer | null = null
+    let board: LiveBoard | null = null
     let server: Watch | null = null
     if (watch) {
         const game = loadGame()
         live = new LivePlayer(game)
-        server = await startWatch(game, live, watch)
+        const b = new LiveBoard(game.corridor, live, store)
+        board = b
+        server = await startWatch(game, live, { ...watch, status: () => b.status() })
         console.log(`watch ${server.url}`)
     }
     const recorder = new FilmRecorder((rec) => {
         if (fd !== null) fs.writeSync(fd, JSON.stringify(rec) + "\n")
         live?.push(rec)
     })
-    return { recorder, close: async () => server?.close() }
+    return {
+        line: (raw) => {
+            recorder.line(raw)
+            board?.line(raw)
+        },
+        record: (rec) => {
+            recorder.record(rec)
+            const note = board?.record(rec)
+            if (note) server?.publish("note", note)
+        },
+        attach: (stats) => {
+            if (board) board.stats = stats
+        },
+        close: async () => server?.close(),
+    }
 }
 
 function pickJev(fake: boolean): JevFn {
@@ -93,11 +120,6 @@ function openLessons(flags: LessonFlags, mode: "console" | "sim", fake: boolean)
     return { store, reflect }
 }
 
-function lessonLine(l: Lesson): string {
-    const where = l.zone ? `zone ${l.zone.x},${l.zone.y} r${l.zone.r}` : "global"
-    return `${l.id} ${where}: ${l.when.join(" + ")} -> ${l.do} (${l.why}) [${l.source}, deaths ${l.deaths} wins ${l.wins} failed ${l.failed}]`
-}
-
 function summary(stats: Stats, seconds: number): string {
     const rate = seconds > 0 ? (stats.decisions / seconds).toFixed(2) : "0"
     return [
@@ -120,11 +142,7 @@ function printDecision(rec: LogRecord): void {
 }
 
 function printLesson(rec: LogRecord): void {
-    const l = rec.learned
-    if (!l) return
-    const failed = l.failed.length ? `, failed ${l.failed.join(" ")}` : ""
-    const note = l.note ? ` (LLM not used: ${l.note})` : ""
-    console.log(l.lesson ? `lesson ${l.verdict} by ${l.source}: ${lessonLine(l.lesson)}${failed}${note}` : `lesson: none${failed}${note}`)
+    if (rec.learned) console.log(learnedLine(rec.learned))
 }
 
 interface SimOpts {
@@ -139,7 +157,7 @@ interface SimOpts {
     predict: boolean
     timeout: number
     record?: string
-    film: FilmRecorder | null
+    film: Recording | null
     quiet: boolean
     // Above 1: retry after a death until the level is won, at most this many attempts.
     attempts: number
@@ -222,6 +240,7 @@ async function simLevel(api: ReturnType<typeof loadLogic>, level: SimLevel, jev:
             film?.record(rec)
             if (!opts.quiet) printDecision(rec)
         }, now, undefined, { predict: opts.predict, lessons: opts.lessons })
+        film?.attach(() => bridge.stats)
         const limit = opts.timeout * 1000 * Math.max(1, opts.attempts)
         const w0 = { hp: 0, kills: 0, total: 0 }
         const keep = () => Object.assign(w0, { hp: sim.world.health, kills: sim.world.kills, total: sim.world.total })
@@ -295,17 +314,18 @@ async function runConsole(fake: boolean, filming: boolean, watch: WatchFlags | n
     const usb = new Hf2Transport()
     usb.open()
     console.log(`HF2 mode ${await usb.bininfo()} (2 = game running), ${fake ? "fake picks" : jevModel()}, log ${log.file}`)
-    const film = await openRecording(filming, watch)
+    const film = await openRecording(filming, watch, lessons?.store ?? null)
     const started = Date.now()
     usb.onLine((line) => {
-        film?.recorder.line(line)
+        film?.line(line)
         if (!line.startsWith("AI ")) console.log(`console: ${line}`)
     })
     const bridge = new Bridge(api, usb, jev, (rec) => {
         log.write(rec)
-        film?.recorder.record(rec)
+        film?.record(rec)
         printDecision(rec)
     }, Date.now, undefined, { lessons })
+    film?.attach(() => bridge.stats)
     const stop = async () => {
         console.log(summary(bridge.stats, (Date.now() - started) / 1000))
         await bridge.lessonsIdle()
@@ -348,7 +368,8 @@ async function main(): Promise<void> {
     if (values.check) return checkConsole()
     const watch = values.watch ? { port: Number(values["watch-port"]), host: values["watch-host"] } : null
     if (values.sim === undefined) return runConsole(values.fake, values.film, watch, lessonFlags)
-    const film = await openRecording(values.film, watch)
+    const lessons = openLessons(lessonFlags, "sim", values.fake)
+    const film = await openRecording(values.film, watch, lessons?.store ?? null)
     await runSim({
         level: values.sim,
         difficulty,
@@ -360,10 +381,10 @@ async function main(): Promise<void> {
         predict: !values["no-predict"],
         timeout: Number(values.timeout),
         record: values.record,
-        film: film?.recorder ?? null,
+        film,
         quiet: values.quiet,
         attempts: Math.max(1, Number(values.attempts)),
-        lessons: openLessons(lessonFlags, "sim", values.fake),
+        lessons,
     })
     await film?.close()
 }

@@ -31,6 +31,8 @@ export interface LogRecord {
     // Decision: id of the lesson in force and whether it replaced Jev's pick.
     lesson?: string
     override?: boolean
+    // Decision: low health replaced a calm pick with heal.
+    forced?: boolean
     // Lesson record: what the death taught.
     learned?: Learned
 }
@@ -261,7 +263,8 @@ export class Bridge {
         const watchdog = this.watchdog(snap, stalledMs)
         this.inFlight = this.ask(snap, state, (answer) => {
             let pick: Action = watchdog ? "advance" : answer.action
-            if (mustHeal(world, sit, pick)) {
+            const forced = mustHeal(world, sit, pick)
+            if (forced) {
                 pick = "heal"
                 this.stats.forcedHeal++
             }
@@ -271,7 +274,7 @@ export class Bridge {
             const decision = decide(this.api, world, sit, taught, answer.danger)
             if (override) decision.label = lessonLabel(decision.label)
             if (this.lessons) this.tracePick(snap, sit, answer.action, decision.action, lesson)
-            return { decision, note: lesson ? { lesson: lesson.lesson.id, override } : {} }
+            return { decision, note: { ...(lesson ? { lesson: lesson.lesson.id, override } : {}), ...(forced ? { forced } : {}) } }
         }, sit.at, lesson?.action ?? null)
             .finally(() => {
                 this.inFlight = null

@@ -142,8 +142,16 @@ test("мост: при 30 HP ответ advance уходит на пристав
     await bridge.idle()
     const rec = log.find((r) => r.kind === "decision")
     assert.deepEqual([rec?.answer?.action, rec?.decision?.action, rec?.decision?.label], ["advance", "heal", "HEAL"])
+    assert.equal(rec?.forced, true, "в логе отмечено, что лечение навязано")
     assert.equal(bridge.stats.forcedHeal, 1)
     assert.equal(bridge.stats.picks.advance, 1, "в статистике — что ответил Jev")
+    world.health = 100
+    const calm: LogRecord[] = []
+    const t2 = new FakeTransport()
+    const free = new Bridge(api, t2, always("advance"), (r) => calm.push(r), () => link.clock, 1)
+    t2.send(api.aiSnapshot(link, world, api.DIFF_NORMAL) as string[])
+    await free.idle()
+    assert.equal("forced" in (calm.find((r) => r.kind === "decision") ?? {}), false, "при полном здоровье отметки нет")
 })
 
 test("решения: при danger от 0.6 GOTO шагает на 1 клетку, иначе маршрут до 6 клеток", () => {

@@ -6,8 +6,9 @@ import test from "node:test"
 import { loadGame, type World } from "../load-logic.ts"
 import { fakeJev } from "./fake-jev.ts"
 import { FilmRecorder, GAP_MS, TAIL_MS, type FilmRecord } from "./film.ts"
-import { encodeFrame, LIVE_DELAY_MS, LivePlayer, NO_SIGNAL, startWatch } from "./live.ts"
-import { Bridge } from "./loop.ts"
+import { LessonStore, type Draft } from "./lessons.ts"
+import { encodeFrame, LIVE_DELAY_MS, LiveBoard, LivePlayer, NO_SIGNAL, startWatch } from "./live.ts"
+import { Bridge, emptyStats, type LogRecord } from "./loop.ts"
 import { Parser, type Snapshot } from "./protocol.ts"
 import { levelIndex, SimConsole } from "./sim.ts"
 
@@ -100,6 +101,61 @@ test("живой кадр: снимок чужой карты не ломает 
     assert.match(live.problem, /hash/i)
 })
 
+function boardOnHangar(store: LessonStore | null): { board: LiveBoard; key: string } {
+    const live = new LivePlayer(game, () => 0)
+    const { world, link } = hangar()
+    const first = snap(link, world, 0)
+    live.push(first)
+    live.push(snap(link, world, 250))
+    if (first.k !== "s") throw new Error("snapshot")
+    return { board: new LiveBoard(api, live, store), key: `${first.snap.lvl}:${first.snap.hash}` }
+}
+
+const lessonDraft = (over: Partial<Draft>): Draft => ({ scope: "zone", zone: { x: 3, y: 1, r: 2 }, when: ["biter_near"], do: "retreat", why: "imp bit", ...over })
+
+test("доска: заметки о смерти, победе, уроке, подмене, лечении, таймере, ошибке и пропуске; обычное решение молчит", () => {
+    const { board } = boardOnHangar(null)
+    const decision = (over: Partial<LogRecord>): LogRecord => ({
+        kind: "decision", at: 0, answer: { action: "advance", confidence: 0.5, danger: null, cost: 0, latencyMs: 400, error: "" },
+        decision: { action: "advance", label: "ADVANCE" } as LogRecord["decision"], ...over,
+    })
+    assert.equal(board.record(decision({})), null)
+    assert.deepEqual(board.record(decision({ lesson: "L2", override: true, decision: { action: "heal", label: "HEAL!" } as LogRecord["decision"] })),
+        { kind: "override", text: "L2 replaced advance with HEAL!" })
+    assert.deepEqual(board.record(decision({ forced: true })), { kind: "heal", text: "low health: advance replaced with heal" })
+    assert.deepEqual(board.record(decision({ answer: { action: "wait", confidence: 0, danger: null, cost: 0, latencyMs: 0, error: "timeout" } })), { kind: "error", text: "Jev: timeout" })
+    assert.deepEqual(board.record({ kind: "watchdog", at: 0, reason: "still for 6000 ms" }), { kind: "watchdog", text: "watchdog: still for 6000 ms, advance" })
+    assert.deepEqual(board.record({ kind: "dead", at: 0 }), { kind: "dead", text: "died on HANGAR" })
+    assert.deepEqual(board.record({ kind: "won", at: 0 }), { kind: "won", text: "won HANGAR" })
+    assert.deepEqual(board.record({ kind: "skip", at: 0, reason: "map hash 1 != 2" }), { kind: "error", text: "skipped: map hash 1 != 2" })
+    const store = new LessonStore(null)
+    const lesson = store.add("0:1", lessonDraft({}), "llm")
+    const note = board.record({ kind: "lesson", at: 0, learned: { lesson, verdict: "new", source: "llm", failed: [], note: "" } })
+    assert.equal(note?.kind, "lesson")
+    assert.match(note?.text ?? "", /^lesson new by llm: L1 zone 3,1 r2: biter_near -> retreat \(imp bit\)/)
+})
+
+test("доска: статус — уровень по имени, здоровье, оружие, убийства, счётчики Jev и правил, fps; уроки уровня первыми, действующий отмечен", () => {
+    const store = new LessonStore(null)
+    const { board, key } = boardOnHangar(store)
+    const other = store.add("2:999", lessonDraft({ why: "elsewhere" }), "rule")
+    const here = store.add(key, lessonDraft({ why: "here" }), "llm")
+    const global = store.add("global", lessonDraft({ scope: "global", zone: null, when: ["health_below_40"], do: "heal", why: "everywhere" }), "llm")
+    board.stats = () => ({ ...emptyStats(), decisions: 3, latencies: [100, 300, 200], cost: 0.002, won: 1, dead: 2, watchdog: 1, forcedHeal: 4, lessonActive: 5, lessonOverride: 1 })
+    board.line("fps 27 q3 step 2")
+    board.line("AI S 1 2 3")
+    board.record({ kind: "decision", at: 0, lesson: here.id })
+    const s = board.status()
+    assert.deepEqual([s.level, s.hp, s.weapon, s.kills, s.enemies], ["HANGAR", 100, "pistol", 0, api.enterLevel(api.startSession(api.RUN_CAMPAIGN, api.DIFF_NORMAL)).enemies.length])
+    assert.deepEqual([s.won, s.dead, s.decisions, s.medianMs, s.cost, s.watchdog, s.forcedHeal, s.lessonActive, s.lessonOverride, s.fps], [1, 2, 3, 200, 0.002, 1, 4, 5, 1, 27])
+    assert.deepEqual(s.lessons?.list.map((l) => [l.id, l.here]), [[here.id, true], [global.id, true], [other.id, false]])
+    assert.equal(s.lessons?.active, here.id)
+    assert.equal(s.lessons?.list[1].where, "global")
+    board.record({ kind: "dead", at: 0 })
+    assert.equal(board.status().lessons?.active, null, "после конца попытки урок не в силе")
+    assert.equal(boardOnHangar(null).board.status().lessons, null, "уроки выключены")
+})
+
 function get(url: string): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
         http.get(url, (res) => {
@@ -162,7 +218,8 @@ test("поток: новый клиент получает текущий кад
 
 test("сценарий: страница и поток — палитра, кадры и решения Jev с прохождения HANGAR; отключение клиента не роняет сервер", async () => {
     const live = new LivePlayer(game)
-    const watch = await startWatch(game, live, { port: 0, frameMs: 5 })
+    const board = new LiveBoard(api, live, null)
+    const watch = await startWatch(game, live, { port: 0, frameMs: 5, status: () => board.status(), statusMs: 20 })
     try {
         const page = await get(`${watch.url}/`)
         assert.equal(page.status, 200)
@@ -170,7 +227,8 @@ test("сценарий: страница и поток — палитра, ка�
         assert.match(page.body, /new EventSource\("\/stream"\)/)
         assert.match(page.body, /body \{[^}]*align-items: flex-start/, "лента не растягивает кадр по высоте")
         assert.match(page.body, /#side \{[^}]*height: 480px;[^}]*overflow: hidden/, "лента не выше кадра")
-        assert.match(page.body, /ol \{[^}]*overflow-y: auto/)
+        assert.match(page.body, /#feed \{[^}]*overflow-y: auto/)
+        assert.match(page.body, /#lessons \{[^}]*max-height: \d+px;[^}]*overflow-y: auto/, "уроки не вытесняют ленту")
         assert.equal((await get(`${watch.url}/healthz`)).body, "ok\n")
         assert.equal((await get(`${watch.url}/nope`)).status, 404)
 
@@ -181,16 +239,33 @@ test("сценарий: страница и поток — палитра, ка�
         const sim = new SimConsole(levelIndex(api, "HANGAR"), api.DIFF_NORMAL, 5)
         const recorder = new FilmRecorder((rec) => live.push(rec))
         sim.onLine((line) => recorder.line(line))
-        new Bridge(sim.api, sim, fakeJev, (rec) => recorder.record(rec), () => sim.clock)
+        const bridge = new Bridge(sim.api, sim, fakeJev, (rec) => {
+            recorder.record(rec)
+            const note = board.record(rec)
+            if (note) watch.publish("note", note)
+        }, () => sim.clock)
+        board.stats = () => bridge.stats
         for (let i = 0; i < 400; i++) {
             sim.step()
             if (i % 10 === 0) await new Promise((resolve) => setTimeout(resolve, 6))
         }
+        watch.publish("note", { kind: "won", text: "won HANGAR" })
         await sleep(50)
         client.close()
 
         assert.equal(events[0].event, "palette")
         assert.equal(JSON.parse(events[0].data).length, 16)
+        assert.equal(events[1].event, "status", "статус сразу при подключении")
+        const statuses = events.filter((e) => e.event === "status").map((e) => JSON.parse(e.data))
+        assert.ok(statuses.length > 2, "статус идёт и дальше")
+        const lastStatus = statuses[statuses.length - 1]
+        assert.equal(lastStatus.level, "HANGAR")
+        assert.ok(lastStatus.decisions > 0)
+        assert.equal(lastStatus.lessons, null)
+        assert.deepEqual(events.filter((e) => e.event === "note").map((e) => JSON.parse(e.data)).at(-1), { kind: "won", text: "won HANGAR" })
+        assert.match(page.body, /id="lessons"/)
+        assert.match(page.body, /addEventListener\("status"/)
+        assert.match(page.body, /addEventListener\("note"/)
         const frames = events.filter((e) => e.event === "frame")
         assert.ok(frames.length >= 10, `кадров ${frames.length}`)
         assert.ok(frames.every((f) => Buffer.from(f.data, "base64").length === 160 * 120))

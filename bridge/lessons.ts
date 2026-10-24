@@ -413,6 +413,20 @@ export interface Learned {
     note: string
 }
 
+export function lessonWhere(l: Lesson): string {
+    return l.zone ? `zone ${l.zone.x},${l.zone.y} r${l.zone.r}` : "global"
+}
+
+export function lessonLine(l: Lesson): string {
+    return `${l.id} ${lessonWhere(l)}: ${l.when.join(" + ")} -> ${l.do} (${l.why}) [${l.source}, deaths ${l.deaths} wins ${l.wins} failed ${l.failed}]`
+}
+
+export function learnedLine(l: Learned): string {
+    const failed = l.failed.length ? `, failed ${l.failed.join(" ")}` : ""
+    const note = l.note ? ` (LLM not used: ${l.note})` : ""
+    return l.lesson ? `lesson ${l.verdict} by ${l.source}: ${lessonLine(l.lesson)}${failed}${note}` : `lesson: none${failed}${note}`
+}
+
 // Marks the lessons that failed, asks the LLM (or falls back to the rule) and saves the result.
 export async function learn(api: LogicApi, world: World, store: LessonStore, death: Death, reflect: ReflectFn | null): Promise<Learned> {
     const failed: string[] = []
