@@ -4,13 +4,15 @@
 // Extra flags: --fake (rule-based picks, no API key), --fast (virtual time, only with --fake),
 // --lag 500 (with --fast: fake answers land 500 ms of sim time later), --no-reflexes, --no-predict,
 // --record demo/ai-hangar.json (inputs of the first won run, for the GIF replay),
-// --check (console only: find the mailbox, listen to the console for 3 s, no Jev).
+// --check (console only: find the mailbox, listen to the console for 3 s, no Jev),
+// --film (snapshots and decisions to bridge/out/film-*.jsonl; npm run ai:film renders a video).
 // Jev needs OPENROUTER_KEY in the environment; JEV_MODEL overrides the model.
 import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import { loadLogic } from "../load-logic.ts"
 import { fakeJev } from "./fake-jev.ts"
+import { FilmRecorder } from "./film.ts"
 import { Hf2Transport } from "./hf2.ts"
 import { jevModel, makeJev, type JevFn } from "./jev.ts"
 import { addStats, Bridge, emptyStats, percentile, type LogRecord, type Stats } from "./loop.ts"
@@ -25,6 +27,14 @@ function openLog(): { write: (rec: LogRecord) => void; file: string } {
     const file = path.join(OUT_DIR.pathname, `run-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`)
     const fd = fs.openSync(file, "a")
     return { write: (rec) => fs.writeSync(fd, JSON.stringify(rec) + "\n"), file }
+}
+
+// --film: every snapshot and decision to bridge/out/film-*.jsonl, for `npm run ai:film`.
+function openFilm(): { recorder: FilmRecorder; file: string } {
+    fs.mkdirSync(OUT_DIR, { recursive: true })
+    const file = path.join(OUT_DIR.pathname, `film-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`)
+    const fd = fs.openSync(file, "a")
+    return { recorder: new FilmRecorder((rec) => fs.writeSync(fd, JSON.stringify(rec) + "\n")), file }
 }
 
 function pickJev(fake: boolean): JevFn {
@@ -65,6 +75,7 @@ interface SimOpts {
     predict: boolean
     timeout: number
     record?: string
+    film: FilmRecorder | null
     quiet: boolean
 }
 
@@ -127,8 +138,11 @@ async function simLevel(api: ReturnType<typeof loadLogic>, level: number, jev: J
         const now = opts.fast ? () => sim.clock : Date.now
         const pending: Array<{ at: number; done: () => void }> = []
         const ask = opts.fast && opts.lag > 0 ? lagged(jev, sim, opts.lag, pending) : jev
+        const film = opts.film
+        if (film) sim.onLine((line) => film.line(line))
         const bridge = new Bridge(sim.api, sim, ask, (rec) => {
             log.write({ ...rec, run } as LogRecord)
+            film?.record(rec)
             if (!opts.quiet) printDecision(rec)
         }, now, undefined, { predict: opts.predict })
         const limit = opts.timeout * 1000
@@ -188,19 +202,23 @@ async function checkConsole(): Promise<void> {
     await usb.close()
 }
 
-async function runConsole(fake: boolean): Promise<void> {
+async function runConsole(fake: boolean, filming: boolean): Promise<void> {
     const api = loadLogic()
     const jev = pickJev(fake)
     const log = openLog()
+    const film = filming ? openFilm() : null
     const usb = new Hf2Transport()
     usb.open()
     console.log(`HF2 mode ${await usb.bininfo()} (2 = game running), ${fake ? "fake picks" : jevModel()}, log ${log.file}`)
+    if (film) console.log(`film ${film.file} (npm run ai:film -- ${path.relative(process.cwd(), film.file)})`)
     const started = Date.now()
     usb.onLine((line) => {
+        film?.recorder.line(line)
         if (!line.startsWith("AI ")) console.log(`console: ${line}`)
     })
     const bridge = new Bridge(api, usb, jev, (rec) => {
         log.write(rec)
+        film?.recorder.record(rec)
         printDecision(rec)
     })
     const stop = async () => {
@@ -227,13 +245,16 @@ async function main(): Promise<void> {
             "no-predict": { type: "boolean", default: false },
             quiet: { type: "boolean", default: false },
             check: { type: "boolean", default: false },
+            film: { type: "boolean", default: false },
         },
     })
     const difficulty = DIFFICULTIES.indexOf(values.difficulty.toLowerCase())
     if (difficulty < 0) throw new Error(`--difficulty: ${DIFFICULTIES.join(", ")}`)
     if (values.fast && !values.fake) throw new Error("--fast needs --fake: real Jev runs in real time")
     if (values.check) return checkConsole()
-    if (values.sim === undefined) return runConsole(values.fake)
+    if (values.sim === undefined) return runConsole(values.fake, values.film)
+    const film = values.film ? openFilm() : null
+    if (film) console.log(`film ${film.file}`)
     return runSim({
         level: values.sim,
         difficulty,
@@ -245,6 +266,7 @@ async function main(): Promise<void> {
         predict: !values["no-predict"],
         timeout: Number(values.timeout),
         record: values.record,
+        film: film?.recorder ?? null,
         quiet: values.quiet,
     })
 }
