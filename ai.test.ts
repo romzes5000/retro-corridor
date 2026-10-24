@@ -180,7 +180,7 @@ test("GOTO в стену: упор дольше 400 мс даёт blocked, а н
     assert.ok(t < c.AI_GOTO_MS + 100, `${t} мс`)
 })
 
-test("GOTO сам открывает обычную дверь и проходит её, синюю без ключа — нет", () => {
+test("GOTO сам открывает обычную дверь и проходит её; через синюю без ключа — blocked сразу", () => {
     const world = c.createWorld(["#######", "#S.|..#", "#######"], 0)
     const link = linkFor(world)
     const box = new Box()
@@ -194,9 +194,10 @@ test("GOTO сам открывает обычную дверь и проходи
     const l2 = linkFor(locked)
     const b2 = new Box()
     answer(l2, locked, b2, (obs) => cmd("goto", obs, 3, 1))
-    frames(l2, locked, b2, 2000, () => l2.exec.result !== c.AI_RUNNING)
+    const t = frames(l2, locked, b2, 2000, () => l2.exec.result !== c.AI_RUNNING)
     assert.equal(l2.exec.result, c.AI_BLOCKED)
-    assert.deepEqual(cell(locked), [2, 1])
+    assert.equal(t, DT, "отрезок через запертую дверь отклоняется на старте")
+    assert.deepEqual(cell(locked), [1, 1])
 })
 
 test("ATTACK: доворачивает на врага и стреляет, только когда он под прицелом; повторами убивает", () => {
@@ -329,7 +330,7 @@ test("хеш карты: один уровень — один хеш, сложн
     assert.ok(hash >= 0 && hash <= 0xffff)
 })
 
-test("статус: JEV метка уверенность задержка; 3 с без команд — NO LINK", () => {
+test("статус: JEV метка уверенность задержка; 3 с без команд — NO LINK с подсказкой", () => {
     const world = c.createWorld(["#######", "#S....#", "#######"], 0)
     const link = linkFor(world)
     const box = new Box()
@@ -338,11 +339,12 @@ test("статус: JEV метка уверенность задержка; 3 с
     frames(link, world, box, DT)
     assert.equal(c.aiStatus(link), "JEV ATTACK 84% 230MS")
     frames(link, world, box, c.AI_SILENT_MS + DT)
-    assert.equal(c.aiStatus(link), "NO LINK")
+    assert.equal(c.aiStatus(link), "NO LINK - RUN NPM RUN AI")
+    assert.ok(4 + 4 * c.AI_NO_LINK.length <= 160, "подсказка влезает в ширину экрана")
     const input = c.aiFrame(link, world, DT, box.read)
     assert.deepEqual([input.fwd, input.strafe, input.turn, input.fire], [0, 0, 0, false], "без связи стоит")
     const glyphs = game.corridorArt.GLYPHS as unknown as string
-    for (const ch of "JEV ATTACK 84% 230MS NO LINK DODGE LE".replace(/ /g, "")) assert.ok(glyphs.includes(ch), ch)
+    for (const ch of `JEV ATTACK 84% 230MS ${c.AI_NO_LINK} DODGE LE SHOTGUN`.replace(/ /g, "")) assert.ok(glyphs.includes(ch), ch)
 })
 
 test("автопереход: ждёт заданное время и сбрасывает счётчик", () => {

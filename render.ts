@@ -51,9 +51,12 @@ namespace corridorRender {
         pause: corridor.Pause
         // AI player status line ("JEV ATTACK 84% 230MS"); empty when a human plays.
         aiLine: string
+        // The line turns red when the AI is in danger.
+        aiAlert: boolean
         constructor() {
             this.pause = null
             this.aiLine = ""
+            this.aiAlert = false
             this.menu = new corridor.Menu()
             this.session = null
             this.records = []
@@ -750,7 +753,7 @@ namespace corridorRender {
         drawOverlay(target, world, view)
         drawMelt(target, view)
         if (view.showFps) shadowText(target, view.fps + "FPS", 4, 4, 4, 1)
-        if (view.aiLine != "" && view.mode == MODE_PLAY) shadowText(target, view.aiLine, 4, 12, 5, 1)
+        if (view.aiLine != "" && view.mode == MODE_PLAY) shadowText(target, view.aiLine, 4, 12, view.aiAlert ? 2 : 5, 1)
     }
 
     function decay(v: number, dt: number): number {

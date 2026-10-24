@@ -273,9 +273,11 @@ game.onUpdate(function () {
         const input = corridor.aiFrame(link, world, dt, readAiBox)
         if (corridor.aiSnapshotDue(link)) aiLog(corridor.aiSnapshot(link, world, session.difficulty))
         view.aiLine = corridor.aiStatus(link)
+        view.aiAlert = corridor.aiAlarm(link, world)
         corridor.update(world, input, dt)
     } else {
         view.aiLine = ""
+        view.aiAlert = false
         corridor.update(world, keys, dt)
     }
     corridorRender.react(view, world.events)
