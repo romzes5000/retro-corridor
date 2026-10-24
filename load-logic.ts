@@ -4,6 +4,7 @@ import ts from "typescript"
 import { FakeImage, imageApi } from "./fake-image.ts"
 
 export interface Imp {
+    [k: string]: any
     x: number
     y: number
     hp: number
@@ -20,6 +21,7 @@ export interface Imp {
 }
 
 export interface Item {
+    [k: string]: any
     x: number
     y: number
     kind: number
@@ -34,6 +36,7 @@ export interface Input {
 }
 
 export interface World {
+    [k: string]: any
     grid: number[]
     w: number
     h: number
@@ -73,6 +76,7 @@ export interface Proj {
 }
 
 export interface Pad {
+    [k: string]: any
     aWas: boolean
     aLatch: boolean
     bWas: boolean
@@ -83,6 +87,7 @@ export interface Pad {
 }
 
 export interface LogicApi {
+    [k: string]: any
     FP: number
     ANGLES: number
     VIEW_W: number
@@ -127,6 +132,7 @@ export interface LogicApi {
 }
 
 export interface View {
+    [k: string]: any
     mode: number
     mapOpen: boolean
     flash: number
@@ -145,6 +151,7 @@ export interface View {
 }
 
 export interface RenderApi {
+    [k: string]: any
     MODE_TITLE: number
     MODE_PLAY: number
     View: new () => View
@@ -167,14 +174,18 @@ export interface Game {
     corridorRender: RenderApi
 }
 
-const FILES = ["art.ts", "logic.ts", "render.ts"]
+const FILES = ["art.ts", "logic.ts", "doors.ts", "levels.ts", "game.ts", "render.ts"]
 
-function transpile(file: string): string {
-    const source = fs.readFileSync(new URL(`./${file}`, import.meta.url), "utf8")
+// One transpile over all files, like the MakeCode compiler: namespace members declared in another
+// file only get qualified (corridor.x) when TypeScript sees the merged namespace in the same unit.
+function transpileAll(): string {
+    const source = FILES.map((file) => fs.readFileSync(new URL(`./${file}`, import.meta.url), "utf8")).join("\n")
     return ts.transpileModule(source, {
         compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 },
     }).outputText
 }
+
+let compiled = ""
 
 // Each call gets a fresh VM context, so module-level state in render.ts never leaks between tests.
 export function loadGame(): Game {
@@ -182,9 +193,8 @@ export function loadGame(): Game {
     math.idiv = (a: number, b: number) => (a / b) | 0
     const context: Record<string, unknown> = { Math: math, image: imageApi }
     vm.createContext(context)
-    for (const file of FILES) {
-        vm.runInContext(transpile(file), context, { filename: file })
-    }
+    if (!compiled) compiled = transpileAll()
+    vm.runInContext(compiled, context, { filename: "corridor.js" })
     vm.runInContext("this.__game = { corridor, corridorArt, corridorRender }", context)
     return context.__game as Game
 }

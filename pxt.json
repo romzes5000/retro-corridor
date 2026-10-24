@@ -1,6 +1,6 @@
 {
     "name": "corridor",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Doom-style raycaster corridor for MakeCode Arcade F4 consoles",
     "dependencies": {
         "device": "*",
@@ -9,6 +9,9 @@
     "files": [
         "art.ts",
         "logic.ts",
+        "doors.ts",
+        "levels.ts",
+        "game.ts",
         "render.ts",
         "main.ts"
     ],

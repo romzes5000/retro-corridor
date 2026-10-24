@@ -15,6 +15,12 @@ export class FakeImage {
         return x >= 0 && y >= 0 && x < this.width && y < this.height
     }
 
+    clone(): FakeImage {
+        const out = new FakeImage(this.width, this.height)
+        out.pixels.set(this.pixels)
+        return out
+    }
+
     getPixel(x: number, y: number): number {
         x |= 0
         y |= 0

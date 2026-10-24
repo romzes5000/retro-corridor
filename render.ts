@@ -3,6 +3,9 @@
 namespace corridorRender {
     export const MODE_TITLE = 0
     export const MODE_PLAY = 1
+    export const MODE_VICTORY = 2
+
+    export const MELT_ROWS = 120
 
     export const FACE_OK = 0
     export const FACE_HURT = 1
@@ -36,7 +39,17 @@ namespace corridorRender {
         acc: number
         colStep: number
         slowFor: number
+        menu: corridor.Menu
+        session: corridor.Session
+        records: string[]
+        meltOn: boolean
+        melt: number[]
         constructor() {
+            this.menu = new corridor.Menu()
+            this.session = null
+            this.records = []
+            this.meltOn = false
+            this.melt = []
             this.mode = MODE_TITLE
             this.mapOpen = false
             this.flash = 0
@@ -66,6 +79,8 @@ namespace corridorRender {
     }
 
     let walls: Image[][] = []
+    let lockedExit: Image[] = []
+    let meltImg: Image = null
     let impFrames: Image[][] = []
     let itemImages: Image[][] = []
     let faces: Image[] = []
@@ -116,6 +131,24 @@ namespace corridorRender {
         return out
     }
 
+    // Replaces template char "x" in art rows with a palette colour.
+    function tint(rows: string[], c: number): string[] {
+        const out: string[] = []
+        const ch = HEX.charAt(c)
+        for (const row of rows) {
+            let line = ""
+            for (let i = 0; i < row.length; i++) line += row.charAt(i) == "x" ? ch : row.charAt(i)
+            out.push(line)
+        }
+        return out
+    }
+
+    function overlay(base: Image, top: Image): Image {
+        const out = base.clone()
+        out.drawTransparentImage(top, 0, 0)
+        return out
+    }
+
     function shades(src: Image, count: number): Image[] {
         const out: Image[] = [src]
         for (let s = 1; s < count; s++) out.push(darken(src, s))
@@ -138,8 +171,22 @@ namespace corridorRender {
 
     export function init(): void {
         if (walls.length > 0) return
-        const stone = shades(decode(corridorArt.STONE), 4)
-        walls = [stone, stone, shades(decode(corridorArt.BRICK), 4), shades(decode(corridorArt.EXIT), 4)]
+        const stoneImg = decode(corridorArt.STONE)
+        const stone = shades(stoneImg, 4)
+        const secret = stoneImg.clone()
+        for (let i = 3; i < 12; i++) secret.setPixel(i, i + 2, 9)
+        const exitImg = decode(corridorArt.EXIT)
+        walls = [
+            stone,
+            stone,
+            shades(decode(corridorArt.BRICK), 4),
+            shades(exitImg, 4),
+            shades(decode(tint(corridorArt.DOOR, 4)), 4),
+            shades(decode(tint(corridorArt.DOOR, 2)), 4),
+            shades(decode(tint(corridorArt.DOOR, 13)), 4),
+            shades(secret, 4),
+        ]
+        lockedExit = shades(overlay(exitImg, decode(corridorArt.EXIT_BARS)), 4)
         const walkA = decode(corridorArt.IMP_WALK_A)
         impFrames = [
             shades(walkA, 3),
@@ -149,7 +196,12 @@ namespace corridorRender {
         ]
         const white = whiten(walkA)
         impFrames.push([white, white, white])
-        itemImages = [shades(decode(corridorArt.MEDKIT), 3), shades(decode(corridorArt.AMMO), 3)]
+        itemImages = [
+            shades(decode(corridorArt.MEDKIT), 3),
+            shades(decode(corridorArt.AMMO), 3),
+            shades(decode(tint(corridorArt.KEY, 2)), 3),
+            shades(decode(tint(corridorArt.KEY, 13)), 3),
+        ]
         faces = [
             decode(corridorArt.FACE_OK),
             decode(corridorArt.FACE_HURT),
@@ -280,9 +332,12 @@ namespace corridorRender {
             for (let cx = 0; cx < world.w; cx++) {
                 const tile = corridor.tileAt(world, cx, cy)
                 let c = 12
-                if (tile == corridor.TILE_STONE) c = 7
+                if (tile == corridor.TILE_STONE || tile == corridor.TILE_SECRET) c = 7
                 else if (tile == corridor.TILE_BRICK) c = 10
-                else if (tile == corridor.TILE_EXIT) c = 4
+                else if (tile == corridor.TILE_EXIT) c = world.exitLocked ? 3 : 4
+                else if (tile == corridor.TILE_DOOR) c = 6
+                else if (tile == corridor.TILE_DOOR_RED) c = 2
+                else if (tile == corridor.TILE_DOOR_BLUE) c = 13
                 target.fillRect(mx + cx * cell, my + cy * cell, cell, cell, c)
             }
         }
@@ -291,7 +346,11 @@ namespace corridorRender {
             if (item.taken) continue
             const ix = mx + ((item.x * cell) >> 10) - (dot >> 1)
             const iy = my + ((item.y * cell) >> 10) - (dot >> 1)
-            target.fillRect(ix, iy, dot, dot, item.kind == corridor.ITEM_HEALTH ? 1 : 5)
+            let ic = 5
+            if (item.kind == corridor.ITEM_HEALTH) ic = 1
+            else if (item.kind == corridor.ITEM_KEY_RED) ic = 2
+            else if (item.kind == corridor.ITEM_KEY_BLUE) ic = 13
+            target.fillRect(ix, iy, dot, dot, ic)
         }
         for (const imp of world.imps) {
             if (imp.dead || !imp.sees) continue
@@ -319,7 +378,7 @@ namespace corridorRender {
     function drawHud(target: Image, world: corridor.World, view: View): void {
         const face = faceFor(world, view)
         const dir = corridor.heading(world.ang)
-        const key = world.health + "," + world.ammo + "," + world.kills + "," + face + "," + dir
+        const key = world.health + "," + world.ammo + "," + world.kills + "," + face + "," + dir + "," + world.keys
         if (key != hudKey) {
             hudKey = key
             hud.fill(9)
@@ -332,6 +391,8 @@ namespace corridorRender {
             text(hud, world.kills + "/" + world.total, 36, 11, 1, 1)
             hud.fillRect(70, 2, 20, 18, 15)
             hud.drawTransparentImage(faces[face], 72, 3)
+            if ((world.keys & corridor.KEY_RED) != 0) hud.fillRect(91, 5, 3, 5, 2)
+            if ((world.keys & corridor.KEY_BLUE) != 0) hud.fillRect(91, 12, 3, 5, 13)
             text(hud, "DIR", 96, 3, 6, 1)
             text(hud, dir, 98, 9, 4, 2)
             text(hud, "AMMO", 124, 3, 6, 1)
@@ -345,24 +406,112 @@ namespace corridorRender {
         target.fillRect(14, y + 2, W - 28, h - 4, 15)
     }
 
-    function drawOverlay(target: Image, world: corridor.World, view: View): void {
-        if (view.mode == MODE_TITLE) {
-            panel(target, 10, 80, 5)
-            centered(target, "CORRIDOR", 18, 4, 2)
-            centered(target, "PAD MOVE AND TURN", 36, 1, 1)
-            centered(target, "A FIRE   B MAP", 44, 1, 1)
-            centered(target, "HOLD B + PAD STRAFE", 52, 1, 1)
-            centered(target, "FIND THE YELLOW EXIT", 62, 4, 1)
-            centered(target, "PRESS A", 76, 2, 1)
+    function clock(ms: number): string {
+        const sec = Math.idiv(ms, 1000)
+        const rest = sec % 60
+        return Math.idiv(sec, 60) + ":" + (rest < 10 ? "0" : "") + rest
+    }
+
+    function drawTitle(target: Image, view: View): void {
+        const menu = view.menu
+        panel(target, 6, 90, 5)
+        centered(target, "CORRIDOR", 12, 4, 2)
+        if (menu.records) {
+            centered(target, "RECORDS", 30, 6, 1)
+            if (view.records.length == 0) centered(target, "NONE YET", 46, 1, 1)
+            for (let i = 0; i < view.records.length && i < 5; i++) centered(target, view.records[i], 40 + i * 8, 1, 1)
+            centered(target, "A BACK", 86, 6, 1)
             return
         }
-        if (!world.won && !world.lost) return
-        panel(target, 18, 64, world.won ? 4 : 2)
-        centered(target, world.won ? "EXIT!" : "YOU DIED", 26, world.won ? 4 : 2, 2)
+        const labels = ["CAMPAIGN", "ENDLESS", "- " + corridor.DIFF_NAMES[menu.difficulty] + " +", "RECORDS"]
+        for (let i = 0; i < labels.length; i++) {
+            const sel = i == menu.index
+            centered(target, sel ? "> " + labels[i] : labels[i], 32 + i * 10, sel ? 4 : 1, 1)
+        }
+        centered(target, "A SELECT", 76, 6, 1)
+        centered(target, "FIND THE YELLOW EXIT", 86, 2, 1)
+    }
+
+    function drawSummary(target: Image, world: corridor.World, view: View): void {
+        panel(target, 8, 86, 4)
+        const name = view.session ? corridor.levelName(view.session) : "LEVEL"
+        centered(target, name, 14, 6, 1)
+        centered(target, "CLEAR", 22, 4, 2)
+        centered(target, "KILLS " + corridor.pct(world.kills, world.total) + "%", 40, 1, 1)
+        centered(target, "ITEMS " + corridor.pct(world.itemsTaken, world.itemsTotal) + "%", 48, 1, 1)
+        centered(target, "SECRETS " + corridor.pct(world.found, world.secrets) + "%", 56, 1, 1)
+        centered(target, "TIME " + clock(world.time), 64, 1, 1)
+        centered(target, "A NEXT", 80, 6, 1)
+    }
+
+    function drawVictory(target: Image, view: View): void {
+        panel(target, 8, 86, 4)
+        centered(target, "VICTORY", 16, 4, 2)
+        const s = view.session
+        if (s) {
+            centered(target, "KILLS " + s.kills + "/" + s.total, 40, 1, 1)
+            centered(target, "TIME " + clock(s.time), 50, 1, 1)
+        }
+        centered(target, "A TITLE", 80, 6, 1)
+    }
+
+    function drawOverlay(target: Image, world: corridor.World, view: View): void {
+        if (view.mode == MODE_TITLE) {
+            drawTitle(target, view)
+            return
+        }
+        if (view.mode == MODE_VICTORY) {
+            drawVictory(target, view)
+            return
+        }
+        if (world.won) {
+            drawSummary(target, world, view)
+            return
+        }
+        if (!world.lost) return
+        panel(target, 18, 64, 2)
+        centered(target, "YOU DIED", 26, 2, 2)
         centered(target, "KILLS " + world.kills + "/" + world.total, 44, 1, 1)
-        centered(target, "TIME " + Math.idiv(world.time, 1000) + "S", 52, 1, 1)
-        centered(target, "SCORE " + world.score, 60, 1, 1)
-        centered(target, "A PLAY AGAIN", 70, 6, 1)
+        centered(target, "TIME " + clock(world.time), 52, 1, 1)
+        centered(target, "A RETRY", 70, 6, 1)
+    }
+
+    // Doom-style wipe: the previous frame slides down in uneven columns over the new one.
+    export function startMelt(view: View, from: Image, seed: number): void {
+        meltImg = from.clone()
+        const rng = new corridor.Rng(seed)
+        view.melt = []
+        let o = -rng.next(16)
+        for (let c = 0; c < W; c++) {
+            o += rng.next(3) - 1
+            if (o > 0) o = 0
+            if (o < -15) o = -15
+            view.melt.push(o)
+        }
+        view.meltOn = true
+    }
+
+    export function meltTick(view: View, dt: number): void {
+        if (!view.meltOn) return
+        const base = Math.max(1, dt >> 3)
+        let done = true
+        for (let c = 0; c < view.melt.length; c++) {
+            let o = view.melt[c]
+            if (o < 0) o += base
+            else o += base + (o >> 2) + 1
+            if (o < MELT_ROWS) done = false
+            view.melt[c] = o
+        }
+        if (done) view.meltOn = false
+    }
+
+    function drawMelt(target: Image, view: View): void {
+        if (!view.meltOn || !meltImg) return
+        for (let c = 0; c < W && c < view.melt.length; c++) {
+            const o = Math.max(0, view.melt[c])
+            if (o >= MELT_ROWS) continue
+            target.blit(c, o, 1, MELT_ROWS - o, meltImg, c, 0, 1, MELT_ROWS - o, false, false)
+        }
     }
 
     export function bobPhase(world: corridor.World): number {
@@ -387,7 +536,8 @@ namespace corridorRender {
         for (let col = 0; col < W; col += step) {
             corridor.castColumn(world, col, hit)
             const h = corridor.wallHeight(hit.dist)
-            const tex = walls[hit.tile][corridor.shadeFor(hit.dist, hit.side, hit.tile)]
+            const set = hit.tile == corridor.TILE_EXIT && world.exitLocked ? lockedExit : walls[hit.tile]
+            const tex = set[corridor.shadeFor(hit.dist, hit.side, hit.tile)]
             const y0 = horizon - (h >> 1)
             for (let k = 0; k < step && col + k < W; k++) {
                 zbuf[col + k] = hit.dist
@@ -419,6 +569,7 @@ namespace corridorRender {
         if (view.mapOpen && view.mode == MODE_PLAY) drawMap(target, world)
         drawHud(target, world, view)
         drawOverlay(target, world, view)
+        drawMelt(target, view)
         if (view.showFps) shadowText(target, view.fps + "FPS", 4, 4, 4, 1)
     }
 

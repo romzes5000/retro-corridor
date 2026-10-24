@@ -56,7 +56,7 @@ test("стена перед носом заполняет центр, сверх
     const world = c.createWorld(["#####", "#S..#", "#####"], 0)
     const img = frame(world)
     for (const col of columnColours(img, 80, 30, 70)) assert.ok(STONE.includes(col), `цвет ${col}`)
-    assert.equal(img.getPixel(80, 0), 13)
+    assert.equal(img.getPixel(80, 0), 14)
     assert.equal(img.getPixel(5, 100), 7)
 })
 
@@ -152,4 +152,59 @@ test("ниже 15 FPS три секунды подряд — рендер пер
     fast.fps = 40
     r.adapt(fast, 10000)
     assert.equal(fast.colStep, 1)
+})
+
+test("таяние экрана: одинаковое при одном seed и сходит за 0,3–1,5 с", () => {
+    const from = new FakeImage(160, 120)
+    from.fill(4)
+    const a = new r.View()
+    const b = new r.View()
+    r.startMelt(a, from as never, 7)
+    r.startMelt(b, from as never, 7)
+    assert.deepEqual(a.melt, b.melt)
+    assert.equal(a.melt.length, 160)
+    for (const o of a.melt) assert.ok(o <= 0 && o >= -15, `смещение ${o}`)
+    assert.ok(new Set(a.melt).size > 3, "колонки сходят неровно")
+
+    const world = c.createWorld(["#####", "#S..#", "#####"], 0)
+    const img = frame(world, (v) => { r.startMelt(v, from as never, 7) })
+    assert.equal(img.getPixel(80, 60), 4, "в первом кадре виден старый экран")
+
+    let ms = 0
+    while (a.meltOn && ms < 5000) {
+        r.meltTick(a, 33)
+        ms += 33
+    }
+    assert.equal(a.meltOn, false)
+    assert.ok(ms >= 300 && ms <= 1500, `таяло ${ms} мс`)
+})
+
+test("красная дверь в кадре красная, ключ в кармане виден на панели", () => {
+    const world = c.createWorld(["######", "#S.R.#", "######"], 0)
+    const img = frame(world)
+    const red = (img: FakeImage) => [...columnColours(img, 80, 30, 70)].some((col) => col === 2 || col === 3)
+    assert.ok(red(img), `цвета ${[...columnColours(img, 80, 30, 70)]}`)
+    assert.equal(red(frame(c.createWorld(["######", "#S.|.#", "######"], 0))), false, "жёлтая дверь без красного")
+    assert.notEqual(img.getPixel(92, 100 + 7), 2)
+    world.keys = c.KEY_RED
+    const keyed = frame(world)
+    assert.equal(keyed.getPixel(92, 100 + 7), 2)
+})
+
+test("экран итогов уровня показывает CLEAR и проценты, титул — пункты меню", () => {
+    const world = c.createWorld(c.CAMPAIGN, 0)
+    world.won = true
+    const won = frame(world)
+    const yellow = [...Array(160).keys()].filter((x) => won.getPixel(x, 28) === 4).length
+    assert.ok(yellow > 10, "крупное CLEAR жёлтым")
+    const title = frame(world, (v) => { v.mode = r.MODE_TITLE })
+    const next = frame(world, (v) => { v.mode = r.MODE_TITLE; v.menu.index = 1 })
+    assert.notDeepEqual(title.pixels, next.pixels, "курсор меню рисуется")
+})
+
+test("в шрифте есть все символы экранов меню и итогов", () => {
+    const glyphs = art.GLYPHS as string
+    for (const text of ["KILLS 50%", "ITEMS 66%", "SECRETS 100%", "TIME 1:15", "> - NORMAL +", "A RETRY", "YOU DIED"]) {
+        for (const ch of text.replace(/ /g, "")) assert.ok(glyphs.includes(ch), `нет глифа «${ch}» в «${text}»`)
+    }
 })
