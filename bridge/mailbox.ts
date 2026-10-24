@@ -14,7 +14,15 @@ export interface BoxCommand {
     conf: number
     latency: number
     label: string
+    // GOTO points after (a, b), at most 2; bytes 26-29 hold x+1, y+1 and 0 means none.
+    route?: Array<[number, number]>
+    // Jev's danger estimate 0..1, byte 30 as 0..100; 0xff when Jev gave none.
+    danger?: number | null
 }
+
+export const ROUTE_AT = 26
+export const DANGER_AT = 30
+export const NO_DANGER = 0xff
 
 // Characters the console font can draw; anything else becomes a space.
 const GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ:!/-.>+%"
@@ -47,6 +55,11 @@ export function encodeBox(c: BoxCommand): Uint8Array {
     box[17] = latency >> 8
     const label = boxLabel(c.label)
     for (let i = 0; i < label.length; i++) box[18 + i] = label.charCodeAt(i)
+    ;(c.route ?? []).slice(0, 2).forEach(([x, y], i) => {
+        box[ROUTE_AT + i * 2] = clamp(x + 1, 0, 255)
+        box[ROUTE_AT + i * 2 + 1] = clamp(y + 1, 0, 255)
+    })
+    box[DANGER_AT] = typeof c.danger === "number" ? clamp(c.danger * 100, 0, 100) : NO_DANGER
     let sum = 0
     for (let i = 0; i < BOX_SIZE - 1; i++) sum += box[i]
     box[BOX_SIZE - 1] = sum & 0xff

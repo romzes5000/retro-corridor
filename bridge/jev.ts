@@ -3,30 +3,34 @@ export const JEV_URL = "https://openrouter.ai/api/v1/systemone"
 export const DEFAULT_MODEL = "~typesafe/jev-latest"
 export const TIMEOUT_MS = 1500
 
-export const ACTIONS = ["advance", "attack", "dodge_left", "dodge_right", "retreat", "heal", "ammo", "open", "wait"] as const
+export const ACTIONS = ["advance", "attack", "dodge_left", "dodge_right", "retreat", "heal", "ammo", "weapon", "open", "wait"] as const
 export type Action = (typeof ACTIONS)[number]
 
+const INSTRUCTIONS = "You are the player in a first-person maze shooter. Pick the best action for the next half second to survive and reach the goal."
+
+const CRITERIA: Record<Action, string> = {
+    advance: "Walk along the route toward the goal (key, then its door, then the exit)",
+    attack: "Turn to the nearest visible enemy and shoot it",
+    dodge_left: "Sidestep to the player's left; this is the safe move when a fireball's safe_side is left",
+    dodge_right: "Sidestep to the player's right; this is the safe move when a fireball's safe_side is right",
+    retreat: "Back away from the nearest enemy while shooting at it, or step away from a fireball; pointless when neither is near",
+    heal: "Walk to the nearest medkit; a medkit restores health, which matters when health is hurt or critical",
+    ammo: "Walk toward the nearest ammo",
+    weapon: "Walk to the shotgun and pick it up; it triples the damage of the pistol, which matters when weapon_state is weak",
+    open: "Press use on the door or wall right ahead",
+    wait: "Stand still for a moment",
+}
+
 export const ACTION_QUESTIONS = {
-    action: {
-        type: "choice",
-        instructions: "You are the player in a first-person maze shooter. Pick the best action for the next half second to survive and reach the goal.",
-        criteria: {
-            advance: "Walk along the route toward the goal (key, then its door, then the exit)",
-            attack: "Turn to the nearest visible enemy and shoot it",
-            dodge_left: "Sidestep to the player's left; this is the safe move when a fireball's safe_side is left",
-            dodge_right: "Sidestep to the player's right; this is the safe move when a fireball's safe_side is right",
-            retreat: "Step back along the route, away from the enemy",
-            heal: "Walk toward the nearest medkit",
-            ammo: "Walk toward the nearest ammo",
-            open: "Press use on the door or wall right ahead",
-            wait: "Stand still for a moment",
-        },
-    },
+    action: { type: "choice", instructions: INSTRUCTIONS, criteria: CRITERIA },
     danger: {
         type: "noul",
         instructions: "Is the player about to take damage?",
     },
 } as const
+
+// Request without the danger question, for latency comparison in `probe --variants`.
+export const ACTION_ONLY = { action: ACTION_QUESTIONS.action } as const
 
 export function jevModel(): string {
     return process.env.JEV_MODEL || DEFAULT_MODEL

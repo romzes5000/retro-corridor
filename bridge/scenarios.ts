@@ -1,0 +1,102 @@
+// Control situations for Jev: a small map, a tweak of the live state, and which picks count as
+// right. Used offline by the tests (fake picks) and against the real model by `npm run ai:eval`.
+import type { LogicApi, World } from "../load-logic.ts"
+import type { Action } from "./jev.ts"
+import { facts, situate } from "./observe.ts"
+
+export interface Scenario {
+    name: string
+    map: string[]
+    ang: number
+    setup?: (api: LogicApi, world: World) => void
+    // A pick is right when it is in `allowed` (if given) and not in `forbidden`.
+    allowed?: Action[]
+    forbidden?: Action[]
+}
+
+const EAST = 0
+const SIDE_ROOM = ["#########", "#S.....X#", "#.#######", "#.#######", "#?#######", "#########"]
+const sideRoom = (item: string) => SIDE_ROOM.map((row) => row.replace("?", item))
+
+export const SCENARIOS: Scenario[] = [
+    {
+        name: "low hp, medkit 3 steps off the route",
+        map: sideRoom("H"),
+        ang: EAST,
+        setup: (_api, w) => { w.health = 25 },
+        allowed: ["heal"],
+    },
+    {
+        name: "full hp, medkit 3 steps off the route",
+        map: sideRoom("H"),
+        ang: EAST,
+        forbidden: ["heal"],
+    },
+    {
+        name: "pistol, shotgun 3 steps off the route",
+        map: sideRoom("G"),
+        ang: EAST,
+        allowed: ["weapon" as Action],
+    },
+    {
+        name: "imp in bite range, low hp",
+        map: ["##########", "#S.....X.#", "##########"],
+        ang: EAST,
+        setup: (api, w) => {
+            w.health = 20
+            w.enemies.push(new api.Enemy(api.ENEMY_IMP, w.x + 800, w.y))
+            Object.assign(w.enemies[0], { awake: true, sees: true, hunting: true })
+        },
+        forbidden: ["advance", "wait", "heal", "ammo"],
+    },
+    {
+        name: "fireball ahead, safe side left",
+        map: ["#########", "#.......#", "#..S....#", "#.......#", "#######X#"],
+        ang: EAST,
+        setup: (api, w) => { w.shots.push(new api.Shot(w.x + 1000, w.y + 150, -2000, 0)) },
+        allowed: ["dodge_left"],
+    },
+    {
+        name: "closed door right ahead",
+        map: ["#########", "#S|....X#", "#########"],
+        ang: EAST,
+        allowed: ["open", "advance"],
+    },
+    {
+        name: "empty corridor to the exit",
+        map: ["##########", "#S......X#", "##########"],
+        ang: EAST,
+        allowed: ["advance"],
+    },
+    {
+        // The D3 loop from the console log: hurt, route behind, nothing in sight, imp asleep behind a wall.
+        name: "hurt, route behind, imp asleep behind a wall",
+        map: ["##########", "#X.....S.#", "##########", "#.....E..#", "##########"],
+        ang: EAST,
+        setup: (_api, w) => { w.health = 27 },
+        forbidden: ["retreat", "wait"],
+    },
+    {
+        name: "imp behind a wall, route ahead",
+        map: ["##########", "#S......X#", "##########", "#...E....#", "##########"],
+        ang: EAST,
+        forbidden: ["attack", "retreat", "dodge_left", "dodge_right"],
+    },
+]
+
+export function scenarioWorld(api: LogicApi, sc: Scenario): World {
+    const world = api.createWorld(sc.map, sc.ang)
+    sc.setup?.(api, world)
+    return world
+}
+
+// The facts Jev gets for the scenario, the same way the bridge builds them.
+export function scenarioState(api: LogicApi, sc: Scenario): Record<string, unknown> {
+    const world = scenarioWorld(api, sc)
+    return facts(api, world, situate(api, world), [])
+}
+
+export function judge(sc: Scenario, pick: string): boolean {
+    if (sc.allowed && !(sc.allowed as string[]).includes(pick)) return false
+    return !(sc.forbidden ?? []).includes(pick as Action)
+}

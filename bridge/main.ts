@@ -1,6 +1,8 @@
 // AI player bridge. Console over USB:   npm run ai
 // Simulated console, same protocol:     npm run ai -- --sim HANGAR [--difficulty normal] [--runs 5]
+// Bench over every campaign level:      npm run ai -- --sim ALL --runs 5 --quiet
 // Extra flags: --fake (rule-based picks, no API key), --fast (virtual time, only with --fake),
+// --lag 500 (with --fast: fake answers land 500 ms of sim time later), --no-reflexes, --no-predict,
 // --record demo/ai-hangar.json (inputs of the first won run, for the GIF replay),
 // --check (console only: find the mailbox, listen to the console for 3 s, no Jev).
 // Jev needs OPENROUTER_KEY in the environment; JEV_MODEL overrides the model.
@@ -11,7 +13,7 @@ import { loadLogic } from "../load-logic.ts"
 import { fakeJev } from "./fake-jev.ts"
 import { Hf2Transport } from "./hf2.ts"
 import { jevModel, makeJev, type JevFn } from "./jev.ts"
-import { Bridge, percentile, type LogRecord, type Stats } from "./loop.ts"
+import { addStats, Bridge, emptyStats, percentile, type LogRecord, type Stats } from "./loop.ts"
 import { isBox } from "./mailbox.ts"
 import { levelIndex, recording, SIM_DT, SimConsole } from "./sim.ts"
 
@@ -51,28 +53,94 @@ function printDecision(rec: LogRecord): void {
     }
 }
 
-async function runSim(opts: { level: string; difficulty: number; runs: number; fake: boolean; fast: boolean; timeout: number; record?: string; quiet: boolean }): Promise<void> {
+interface SimOpts {
+    level: string
+    difficulty: number
+    runs: number
+    fake: boolean
+    fast: boolean
+    // With --fast: every answer lands this many ms of sim time after the request.
+    lag: number
+    reflexes: boolean
+    predict: boolean
+    timeout: number
+    record?: string
+    quiet: boolean
+}
+
+// Answers in sim time: the request resolves once the sim clock has moved `lag` ms on.
+function lagged(jev: JevFn, sim: SimConsole, lag: number, pending: Array<{ at: number; done: () => void }>): JevFn {
+    return async (state) => {
+        const answer = await jev(state)
+        await new Promise<void>((done) => pending.push({ at: sim.clock + lag, done }))
+        return { ...answer, latencyMs: lag }
+    }
+}
+
+// One level of the bench: outcomes plus what the player did on the way.
+interface LevelBench {
+    name: string
+    runs: number
+    wins: number
+    seconds: number
+    hpAtEnd: number[]
+    idleMs: number
+    playMs: number
+    longestIdleMs: number
+    damage: { bite: number; shot: number; lava: number }
+    stats: Stats
+}
+
+function benchLine(b: LevelBench): string {
+    const share = b.playMs > 0 ? ((100 * b.idleMs) / b.playMs).toFixed(1) : "0"
+    const hp = b.hpAtEnd.length ? Math.round(b.hpAtEnd.reduce((a, v) => a + v, 0) / b.hpAtEnd.length) : 0
+    return [
+        `${b.name}: won ${b.wins}/${b.runs}, ${(b.seconds / Math.max(1, b.runs)).toFixed(1)} s per run, hp at end ${hp}`,
+        `pickups ${JSON.stringify(b.stats.pickups)}, picks ${JSON.stringify(b.stats.picks)}`,
+        `idle ${share}% (longest ${b.longestIdleMs} ms), damage bite ${b.damage.bite} shot ${b.damage.shot} lava ${b.damage.lava}`,
+        `watchdog ${b.stats.watchdog}, predicted ${b.stats.predicted}/${b.stats.decisions}`,
+        summary(b.stats, b.seconds),
+    ].join("\n  ")
+}
+
+async function runSim(opts: SimOpts): Promise<void> {
     const api = loadLogic()
-    const level = levelIndex(api, opts.level)
+    const levels = opts.level.toUpperCase() === "ALL" ? api.LEVELS.map((_: unknown, i: number) => i) : [levelIndex(api, opts.level)]
     const jev = pickJev(opts.fake)
     const log = openLog()
-    console.log(`sim ${api.LEVELS[level].name} ${DIFFICULTIES[opts.difficulty]}, ${opts.runs} run(s), ${opts.fake ? "fake picks" : jevModel()}, log ${log.file}`)
-    let wins = 0
+    console.log(`sim ${levels.map((l: number) => api.LEVELS[l].name).join(", ")} ${DIFFICULTIES[opts.difficulty]}, ${opts.runs} run(s) each, ${opts.fake ? "fake picks" : jevModel()}, log ${log.file}`)
+    const benches: LevelBench[] = []
+    for (const level of levels) benches.push(await simLevel(api, level, jev, log, opts))
+    if (benches.length > 1) console.log("bench:")
+    for (const b of benches) console.log(benchLine(b))
+}
+
+async function simLevel(api: ReturnType<typeof loadLogic>, level: number, jev: JevFn, log: ReturnType<typeof openLog>, opts: SimOpts): Promise<LevelBench> {
+    const bench: LevelBench = {
+        name: api.LEVELS[level].name, runs: opts.runs, wins: 0, seconds: 0, hpAtEnd: [], idleMs: 0, playMs: 0,
+        longestIdleMs: 0, damage: { bite: 0, shot: 0, lava: 0 }, stats: emptyStats(),
+    }
     let recorded = false
-    const total: Stats = { decisions: 0, errors: 0, latencies: [], cost: 0, won: 0, dead: 0, stale: 0, skipped: 0 }
-    let seconds = 0
     for (let run = 1; run <= opts.runs; run++) {
         const sim = new SimConsole(level, opts.difficulty)
+        sim.reflexes = opts.reflexes
         const now = opts.fast ? () => sim.clock : Date.now
-        const bridge = new Bridge(sim.api, sim, jev, (rec) => {
+        const pending: Array<{ at: number; done: () => void }> = []
+        const ask = opts.fast && opts.lag > 0 ? lagged(jev, sim, opts.lag, pending) : jev
+        const bridge = new Bridge(sim.api, sim, ask, (rec) => {
             log.write({ ...rec, run } as LogRecord)
             if (!opts.quiet) printDecision(rec)
-        }, now)
+        }, now, undefined, { predict: opts.predict })
         const limit = opts.timeout * 1000
         if (opts.fast) {
             while (!sim.result && sim.clock < limit) {
                 sim.step()
-                await bridge.idle()
+                for (const p of pending.filter((p) => p.at <= sim.clock)) {
+                    pending.splice(pending.indexOf(p), 1)
+                    p.done()
+                }
+                if (opts.lag > 0) await new Promise((resolve) => setImmediate(resolve))
+                else await bridge.idle()
             }
         } else {
             let last = Date.now()
@@ -86,18 +154,22 @@ async function runSim(opts: { level: string; difficulty: number; runs: number; f
         }
         const w = sim.world
         const result = sim.result ?? "timeout"
-        if (result === "won") wins++
-        seconds += sim.clock / 1000
-        for (const k of ["decisions", "errors", "cost", "stale", "skipped"] as const) total[k] += bridge.stats[k]
-        total.latencies.push(...bridge.stats.latencies)
-        console.log(`run ${run}: ${result} in ${(sim.clock / 1000).toFixed(1)} s, hp ${w.health}, kills ${w.kills}/${w.total}; ${summary(bridge.stats, sim.clock / 1000)}`)
+        if (result === "won") bench.wins++
+        bench.seconds += sim.clock / 1000
+        bench.hpAtEnd.push(w.health)
+        bench.idleMs += sim.idleMs
+        bench.playMs += sim.playMs
+        bench.longestIdleMs = Math.max(bench.longestIdleMs, sim.longestIdleMs)
+        for (const k of ["bite", "shot", "lava"] as const) bench.damage[k] += sim.damage[k]
+        addStats(bench.stats, bridge.stats)
+        console.log(`${bench.name} run ${run}: ${result} in ${(sim.clock / 1000).toFixed(1)} s, hp ${w.health}, kills ${w.kills}/${w.total}; ${summary(bridge.stats, sim.clock / 1000)}`)
         if (opts.record && result === "won" && !recorded) {
             fs.writeFileSync(opts.record, JSON.stringify(recording(sim)) + "\n")
             recorded = true
             console.log(`recorded ${sim.frames.length} frames to ${opts.record}`)
         }
     }
-    console.log(`won ${wins}/${opts.runs}; ${summary(total, seconds)}`)
+    return bench
 }
 
 async function checkConsole(): Promise<void> {
@@ -150,6 +222,9 @@ async function main(): Promise<void> {
             record: { type: "string" },
             fake: { type: "boolean", default: false },
             fast: { type: "boolean", default: false },
+            lag: { type: "string", default: "0" },
+            "no-reflexes": { type: "boolean", default: false },
+            "no-predict": { type: "boolean", default: false },
             quiet: { type: "boolean", default: false },
             check: { type: "boolean", default: false },
         },
@@ -165,6 +240,9 @@ async function main(): Promise<void> {
         runs: Number(values.runs),
         fake: values.fake,
         fast: values.fast,
+        lag: Number(values.lag),
+        reflexes: !values["no-reflexes"],
+        predict: !values["no-predict"],
         timeout: Number(values.timeout),
         record: values.record,
         quiet: values.quiet,

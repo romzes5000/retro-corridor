@@ -1,6 +1,8 @@
 // Turns the shadow world into (a) a situation the bridge can act on and (b) plain English facts
-// for Jev. Facts describe; they never prescribe an action.
+// for Jev. Facts describe; they never prescribe an action. Enemies and fireballs only count when
+// they are in sight now (or, for enemies, were in the last few seconds); the map itself is known.
 import type { LogicApi, World } from "../load-logic.ts"
+import { inSight, MEMORY_MS, Memory } from "./memory.ts"
 import { angleDiff, angleTo, exitSpot, findPath, KEY_ITEMS, passable, planRoute, type Cell } from "./route.ts"
 
 export type GoalKind = "key" | "exit" | "boss" | "none"
@@ -13,6 +15,15 @@ export interface EnemyView {
     sees: boolean
     hp: number
     inCrosshair: boolean
+    inBiteRange: boolean
+}
+
+export interface RememberedView {
+    i: number
+    kind: string
+    secondsAgo: number
+    direction: string
+    cells: number
 }
 
 export interface FireballView {
@@ -21,41 +32,86 @@ export interface FireballView {
     etaMs: number
 }
 
+// A pickup on the map: grid path to it and how many extra steps it costs on the way to the goal.
+export interface ItemView {
+    cell: Cell
+    steps: number
+    detour: number
+    path: Cell[]
+    next: Cell
+}
+
+export interface LavaView {
+    under: boolean
+    cells: number
+    direction: string
+}
+
 export interface Situation {
     at: Cell
     goal: GoalKind
     goalCell: Cell | null
+    // Boss goal only: in sight now, or where it is being looked for.
+    bossSeen: boolean
+    bossSource: "seen" | "spawn" | ""
+    bossAgeMs: number
     steps: number
-    // Next GOTO target: up to 2 cells in a straight line along the route.
+    // Grid path from the player's cell to the goal; the last cell is the exit tile itself.
+    path: Cell[]
+    // First GOTO waypoint along the path (straight, at most 2 cells).
     next: Cell | null
     back: Cell | null
-    medkit: { cell: Cell; steps: number; next: Cell } | null
-    ammo: { cell: Cell; steps: number; next: Cell } | null
+    medkit: ItemView | null
+    ammo: ItemView | null
+    shotgun: ItemView | null
     enemies: EnemyView[]
-    // Live enemies in range with a wall between them and the player.
-    hidden: number
+    remembered: RememberedView[]
     fireballs: FireballView[]
     doorAhead: "closed" | "locked" | "opening" | "none"
     target: number
+    lava: LavaView | null
+    // The route is longer than it would be through lava.
+    aroundLava: boolean
 }
 
 const ENEMY_NAMES = ["imp", "shooter", "knight", "boss"]
 const KEY_NAMES: Record<number, string> = { 1: "red", 2: "blue" }
 const NEAR_ENEMIES = 4
 const ENEMY_RANGE = 8
-const FIREBALL_RANGE = 3.5
+const LAVA_RANGE = 2
+const BITE_MARGIN = 150
+export const ROUTE_CELLS = 6
+const ROUTE_POINTS = 3
+const SEGMENT = 2
 
 const cellOf = (x: number, y: number): Cell => [x >> 10, y >> 10]
 const same = (a: Cell, b: Cell) => a[0] === b[0] && a[1] === b[1]
+const centreOf = (api: LogicApi, c: Cell): [number, number] => [c[0] * api.FP + api.FP / 2, c[1] * api.FP + api.FP / 2]
 
-// Farthest cell (at most 2) the route keeps going straight from its start.
+// Up to 3 GOTO points along a grid path (path[0] is the player's cell), covering at most
+// `maxCells` cells. Each point is a straight run of 1-2 cells from the one before, so an older
+// console that only reads the first point still accepts it.
+export function waypoints(path: Cell[], maxCells = ROUTE_CELLS): Cell[] {
+    const cells = path.slice(0, maxCells + 1)
+    const out: Cell[] = []
+    let from = cells[0]
+    for (let i = 1; i < cells.length && out.length < ROUTE_POINTS; i++) {
+        const c = cells[i]
+        const last = i === cells.length - 1
+        const n = cells[i + 1]
+        const turns = !last && (n[0] - c[0] !== c[0] - cells[i - 1][0] || n[1] - c[1] !== c[1] - cells[i - 1][1])
+        const run = Math.abs(c[0] - from[0]) + Math.abs(c[1] - from[1])
+        if (last || turns || run >= SEGMENT) {
+            out.push(c)
+            from = c
+        }
+    }
+    return out
+}
+
+// Kept for callers that only want the first point.
 export function straightStep(path: Cell[]): Cell | null {
-    if (path.length < 2) return null
-    const dx = path[1][0] - path[0][0]
-    const dy = path[1][1] - path[0][1]
-    let k = 1
-    while (k < 2 && k + 1 < path.length && path[k + 1][0] - path[k][0] === dx && path[k + 1][1] - path[k][1] === dy) k++
-    return path[k]
+    return waypoints(path)[0] ?? null
 }
 
 // Exit tile behind the floor cell exitSpot() returns, so the last GOTO walks into it.
@@ -79,64 +135,57 @@ function direction(api: LogicApi, world: World, x: number, y: number): string {
     return rel > 0 ? "right" : "left"
 }
 
+const cellsTo = (api: LogicApi, world: World, x: number, y: number) => Math.round((api.distance(world.x, world.y, x, y) / api.FP) * 10) / 10
+
 function fireballs(api: LogicApi, world: World): FireballView[] {
-    const lane = api.PLAYER_RADIUS + api.SHOT_RADIUS + 200
-    const rightX = -api.sin(world.ang) / api.FP
-    const rightY = api.cos(world.ang) / api.FP
     const out: FireballView[] = []
     for (const shot of world.shots) {
-        const rx = world.x - shot.x
-        const ry = world.y - shot.y
-        const along = rx * shot.vx + ry * shot.vy
-        const v2 = shot.vx * shot.vx + shot.vy * shot.vy
-        if (along <= 0 || v2 === 0 || Math.hypot(rx, ry) > FIREBALL_RANGE * api.FP) continue
-        const px = rx - (along / v2) * shot.vx
-        const py = ry - (along / v2) * shot.vy
-        if (Math.hypot(px, py) > lane) continue
-        // A sidestep only leaves the line of a ball flying along the facing axis; one crossing from
-        // the side keeps hitting whatever the strafe direction.
-        const lateral = Math.abs(shot.vx * rightX + shot.vy * rightY)
-        const frontal = Math.abs(shot.vx * rightY - shot.vy * rightX)
-        let side: "left" | "right" | "none" = px * rightX + py * rightY >= 0 ? "right" : "left"
-        const probe = (s: string) => {
-            const d = s === "right" ? 1 : -1
-            return api.fits(world, world.x + rightX * d * 600, world.y + rightY * d * 600, api.PLAYER_RADIUS)
-        }
-        if (lateral > frontal) side = "none"
-        else if (!probe(side)) side = side === "right" ? "left" : "right"
-        if (side !== "none" && !probe(side)) side = "none"
-        out.push({ from: direction(api, world, shot.x, shot.y), safeSide: side, etaMs: Math.round((along * 1000) / v2) })
+        if (!inSight(api, world, shot.x, shot.y)) continue
+        const eta = api.aiShotEta(world, shot)
+        if (eta < 0) continue
+        const side = api.aiDodgeSide(world, shot)
+        out.push({ from: direction(api, world, shot.x, shot.y), safeSide: side > 0 ? "right" : side < 0 ? "left" : "none", etaMs: eta })
     }
     return out.sort((a, b) => a.etaMs - b.etaMs)
 }
 
-function nearestItem(api: LogicApi, world: World, at: Cell, kind: number): Situation["medkit"] {
-    let best: Situation["medkit"] = null
+function pathTo(api: LogicApi, world: World, from: Cell, to: Cell): Cell[] {
+    return same(from, to) ? [from] : findPath(api, world, from, to)
+}
+
+function nearestItem(api: LogicApi, world: World, at: Cell, kind: number, goalCell: Cell | null, goalSteps: number): ItemView | null {
+    let best: ItemView | null = null
     for (const item of world.items) {
         if (item.taken || item.kind !== kind) continue
         const cell = cellOf(item.x, item.y)
-        const path = same(cell, at) ? [at] : findPath(api, world, at, cell)
+        const path = pathTo(api, world, at, cell)
         if (path.length === 0) continue
-        const next = straightStep(path)
-        if (next && (!best || path.length - 1 < best.steps)) best = { cell, steps: path.length - 1, next }
+        const steps = path.length - 1
+        if (best && steps >= best.steps) continue
+        const onward = goalCell ? pathTo(api, world, cell, goalCell) : []
+        const detour = goalCell && onward.length > 0 ? steps + onward.length - 1 - goalSteps : steps
+        best = { cell, steps, detour, path, next: waypoints(path)[0] ?? cell }
     }
     return best
 }
 
-// Neighbour cell that takes the player farthest from the nearest live enemy or fireball.
-function backStep(api: LogicApi, world: World, at: Cell): Cell | null {
-    const threats = [
-        ...world.enemies.filter((e) => !e.dead && (e.sees || e.awake)).map((e) => [e.x, e.y]),
-        ...world.shots.map((s) => [s.x, s.y]),
-    ]
+// Neighbour cell that takes the player farthest from what threatens it: enemies in sight or seen
+// in the last few seconds, and fireballs in sight. Null when nothing does.
+function backStep(api: LogicApi, world: World, at: Cell, memory: Memory, enemies: EnemyView[], remembered: RememberedView[]): Cell | null {
+    const threats: Array<[number, number]> = []
+    for (const e of enemies) threats.push([world.enemies[e.i].x, world.enemies[e.i].y])
+    for (const r of remembered) {
+        const s = memory.last.get(r.i)
+        if (s) threats.push([s.x, s.y])
+    }
+    for (const s of world.shots) if (inSight(api, world, s.x, s.y)) threats.push([s.x, s.y])
     if (threats.length === 0) return null
     let best: Cell | null = null
     let bestGap = -Infinity
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const cell: Cell = [at[0] + dx, at[1] + dy]
         if (!passable(api, world, cell[0], cell[1], world.keys)) continue
-        const cx = cell[0] * api.FP + api.FP / 2
-        const cy = cell[1] * api.FP + api.FP / 2
+        const [cx, cy] = centreOf(api, cell)
         const gap = Math.min(...threats.map(([x, y]) => Math.hypot(x - cx, y - cy)))
         if (gap > bestGap) {
             bestGap = gap
@@ -155,62 +204,123 @@ function doorAhead(api: LogicApi, world: World): Situation["doorAhead"] {
     return door.state === api.DOOR_OPENING ? "opening" : "closed"
 }
 
-export function situate(api: LogicApi, world: World): Situation {
+function nearestLava(api: LogicApi, world: World, at: Cell): LavaView | null {
+    if (api.lavaAt(world, at[0], at[1])) return { under: true, cells: 0, direction: "under you" }
+    let best: LavaView | null = null
+    for (let dy = -LAVA_RANGE; dy <= LAVA_RANGE; dy++) {
+        for (let dx = -LAVA_RANGE; dx <= LAVA_RANGE; dx++) {
+            if (!api.lavaAt(world, at[0] + dx, at[1] + dy)) continue
+            const [x, y] = centreOf(api, [at[0] + dx, at[1] + dy])
+            const cells = cellsTo(api, world, x, y)
+            if (!best || cells < best.cells) best = { under: false, cells, direction: direction(api, world, x, y) }
+        }
+    }
+    return best
+}
+
+export function biteReach(api: LogicApi, kind: number): number {
+    return api.ENEMY_BITE[kind] > 0 ? api.IMP_REACH + api.ENEMY_RADIUS[kind] - api.IMP_RADIUS + BITE_MARGIN : 0
+}
+
+export function situate(api: LogicApi, world: World, memory: Memory = new Memory()): Situation {
     const at = cellOf(world.x, world.y)
     const exit = exitTile(api, world)
+    const target = api.target(world)
+    const near = world.enemies
+        .map((e, i) => ({ e, i }))
+        .filter(({ e }) => !e.dead && api.distance(world.x, world.y, e.x, e.y) <= ENEMY_RANGE * api.FP)
+        .filter(({ e }) => inSight(api, world, e.x, e.y))
+    const enemies: EnemyView[] = near
+        .map(({ e, i }) => {
+            const d = api.distance(world.x, world.y, e.x, e.y)
+            return {
+                i,
+                kind: ENEMY_NAMES[e.kind] ?? "enemy",
+                cells: Math.round((d / api.FP) * 10) / 10,
+                direction: direction(api, world, e.x, e.y),
+                sees: e.sees,
+                hp: e.hp,
+                inCrosshair: target === i,
+                inBiteRange: d <= biteReach(api, e.kind),
+            }
+        })
+        .sort((a, b) => a.cells - b.cells)
+        .slice(0, NEAR_ENEMIES)
+    const remembered: RememberedView[] = memory.recent(api, world).map((s) => ({
+        i: s.i,
+        kind: ENEMY_NAMES[s.kind] ?? "enemy",
+        secondsAgo: Math.round((memory.now - s.at) / 100) / 10,
+        direction: direction(api, world, s.x, s.y),
+        cells: cellsTo(api, world, s.x, s.y),
+    }))
+
     let goal: GoalKind = "none"
     let goalCell: Cell | null = null
-    const boss = world.enemies.findIndex((e) => !e.dead && e.kind === api.ENEMY_BOSS)
+    let bossSeen = false
+    let bossSource: Situation["bossSource"] = ""
+    let bossAgeMs = 0
+    const boss = memory.bossIndex(api, world)
     if (world.exitLocked && boss >= 0) {
         goal = "boss"
-        goalCell = cellOf(world.enemies[boss].x, world.enemies[boss].y)
+        const b = world.enemies[boss]
+        bossSeen = inSight(api, world, b.x, b.y)
+        if (bossSeen) {
+            goalCell = cellOf(b.x, b.y)
+        } else {
+            const look = memory.bossTarget(api, world)
+            if (look) {
+                goalCell = look.cell
+                bossSource = look.source
+                bossAgeMs = look.ageMs
+            }
+        }
     } else if (exit) {
         const route = planRoute(api, world, at, exit.spot)
         goalCell = route ? route[0] : exit.spot
         goal = route && route.length > 1 ? "key" : "exit"
     }
-    let path: Cell[] = []
-    if (goalCell) path = same(at, goalCell) ? [at] : findPath(api, world, at, goalCell)
-    let next = straightStep(path)
-    if (goal === "exit" && exit && same(at, exit.spot)) next = exit.tile
-    if (goal === "boss" && path.length > 0 && path.length <= 2) next = null
-    const target = api.target(world)
-    const near = world.enemies
-        .map((e, i) => ({ e, i }))
-        .filter(({ e }) => !e.dead && api.distance(world.x, world.y, e.x, e.y) <= ENEMY_RANGE * api.FP)
-    const seen = near.filter(({ e }) => api.canSee(world, world.x, world.y, e.x, e.y))
-    const enemies = seen
-        .map(({ e, i }) => ({
-            i,
-            kind: ENEMY_NAMES[e.kind] ?? "enemy",
-            cells: Math.round((api.distance(world.x, world.y, e.x, e.y) / api.FP) * 10) / 10,
-            direction: direction(api, world, e.x, e.y),
-            sees: e.sees,
-            hp: e.hp,
-            inCrosshair: target === i,
-        }))
-        .sort((a, b) => a.cells - b.cells)
-        .slice(0, NEAR_ENEMIES)
+    let path: Cell[] = goalCell ? pathTo(api, world, at, goalCell) : []
+    if (goal === "exit" && exit && path.length > 0) path = [...path, exit.tile]
+    let next = waypoints(path)[0] ?? null
+    if (goal === "boss" && bossSeen && path.length > 0 && path.length <= 2) next = null
+    let aroundLava = false
+    if (goalCell && path.length > 1) {
+        const direct = findPath(api, world, at, goalCell, world.keys, false)
+        aroundLava = direct.length > 0 && direct.length < pathTo(api, world, at, goalCell).length
+    }
+    const steps = Math.max(0, (goalCell ? pathTo(api, world, at, goalCell).length : 0) - 1)
     return {
         at,
         goal,
         goalCell,
-        steps: Math.max(0, path.length - 1),
+        bossSeen,
+        bossSource,
+        bossAgeMs,
+        steps,
+        path,
         next,
-        back: backStep(api, world, at),
-        medkit: nearestItem(api, world, at, api.ITEM_HEALTH),
-        ammo: nearestItem(api, world, at, api.ITEM_AMMO),
+        back: backStep(api, world, at, memory, enemies, remembered),
+        medkit: world.health < 100 ? nearestItem(api, world, at, api.ITEM_HEALTH, goalCell, steps) : null,
+        ammo: nearestItem(api, world, at, api.ITEM_AMMO, goalCell, steps),
+        shotgun: world.hasShotgun ? null : nearestItem(api, world, at, api.ITEM_SHOTGUN, goalCell, steps),
         enemies,
-        hidden: near.length - seen.length,
+        remembered,
         fireballs: fireballs(api, world),
         doorAhead: doorAhead(api, world),
         target,
+        lava: nearestLava(api, world, at),
+        aroundLava,
     }
 }
 
 function goalText(api: LogicApi, world: World, sit: Situation): string {
     if (sit.goal === "none") return "no goal visible"
-    if (sit.goal === "boss") return `kill the boss to unlock the exit, ${sit.steps} steps away`
+    if (sit.goal === "boss") {
+        if (sit.bossSeen) return `kill the boss to unlock the exit, ${sit.steps} steps away`
+        if (sit.bossSource === "seen") return `find the boss to unlock the exit, last seen ${(sit.bossAgeMs / 1000).toFixed(0)} s ago, ${sit.steps} steps away`
+        if (sit.bossSource === "spawn") return `find the boss to unlock the exit, it appears ${sit.steps} steps away`
+        return "find the boss to unlock the exit"
+    }
     if (sit.goal === "key") {
         const item = world.items.find((it) => !it.taken && sit.goalCell && same(cellOf(it.x, it.y), sit.goalCell))
         const colour = item ? KEY_NAMES[KEY_ITEMS[item.kind]] ?? "" : ""
@@ -220,11 +330,15 @@ function goalText(api: LogicApi, world: World, sit: Situation): string {
     return sit.steps === 0 ? "the exit is right ahead, walk into it" : `reach the exit, ${sit.steps} steps away`
 }
 
+function cellDirection(api: LogicApi, world: World, c: Cell): string {
+    const [x, y] = centreOf(api, c)
+    return direction(api, world, x, y)
+}
+
 function routeText(api: LogicApi, world: World, sit: Situation): string {
     if (!sit.next) return "no walkable step toward the goal"
-    const x = sit.next[0] * api.FP + api.FP / 2
-    const y = sit.next[1] * api.FP + api.FP / 2
-    return `next waypoint is ${direction(api, world, x, y)}`
+    const text = `next waypoint is ${cellDirection(api, world, sit.next)}`
+    return sit.aroundLava ? `route goes around lava, ${text}` : text
 }
 
 // Progress since the previous decision, from the step count to the goal then and now.
@@ -235,14 +349,42 @@ export function progressText(before: number | null, now: number): string {
     return "no progress toward the goal"
 }
 
+export function healthState(hp: number): "critical" | "hurt" | "ok" {
+    if (hp < 40) return "critical"
+    if (hp < 70) return "hurt"
+    return "ok"
+}
+
+function itemFacts(api: LogicApi, world: World, item: ItemView | null): Record<string, unknown> | null {
+    if (!item) return null
+    return { steps: item.steps, direction: cellDirection(api, world, item.next), detour_steps: item.detour }
+}
+
+const SHOTGUN_TEXT = "shotgun, 3 pellets of 1-3 damage, 2 ammo per shot"
+export const SHOTGUN_NEAR = 10
+
+// Jev ignores a shotgun lying a few steps off the route unless the facts say the pistol is weak
+// and the shotgun close; the distance alone did not make it detour.
+export function weaponState(world: World, sit: Situation): "strong" | "weak" | "weak, a shotgun is near" {
+    if (world.hasShotgun) return "strong"
+    return sit.shotgun && sit.shotgun.steps <= SHOTGUN_NEAR ? "weak, a shotgun is near" : "weak"
+}
+
+export interface FactsExtra {
+    // Out of combat and not moving for this long, from the bridge's own clock.
+    stalledMs?: number
+}
+
 // The JSON state Jev reads. English only, short, no instructions.
-export function facts(api: LogicApi, world: World, sit: Situation, recent: string[], progress = "new goal"): Record<string, unknown> {
-    const weapon = world.weapon === api.WEAPON_SHOTGUN ? "shotgun" : "pistol"
-    return {
+export function facts(api: LogicApi, world: World, sit: Situation, recent: string[], progress = "new goal", extra: FactsExtra = {}): Record<string, unknown> {
+    const weapon = world.weapon === api.WEAPON_SHOTGUN ? SHOTGUN_TEXT : "pistol, 1 damage per shot"
+    const medkit = itemFacts(api, world, sit.medkit)
+    const state: Record<string, unknown> = {
         goal: goalText(api, world, sit),
         route: routeText(api, world, sit),
         progress,
         health: world.health,
+        health_state: healthState(world.health),
         ammo: world.ammo,
         weapon,
         enemies: sit.enemies.map((e) => ({
@@ -250,18 +392,28 @@ export function facts(api: LogicApi, world: World, sit: Situation, recent: strin
             distance: e.cells,
             direction: e.direction,
             in_crosshair: e.inCrosshair,
+            in_bite_range: e.inBiteRange,
             hp: e.hp,
             sees_you: e.sees,
         })),
-        enemies_behind_walls: sit.hidden,
+        last_seen: sit.remembered.map((r) => ({ kind: r.kind, seconds_ago: r.secondsAgo, direction: r.direction, distance: r.cells })),
         fireballs: sit.fireballs.map((f) => ({
             coming_from: f.from,
             hits_in_ms: f.etaMs,
             safe_side: f.safeSide,
         })),
         door_ahead: sit.doorAhead,
-        nearest_medkit: sit.medkit ? sit.medkit.steps : null,
-        nearest_ammo: sit.ammo ? sit.ammo.steps : null,
+        medkit: medkit ? { ...medkit, heals: api.HEALTH_PICKUP } : null,
+        ammo_pickup: itemFacts(api, world, sit.ammo),
+        shotgun: itemFacts(api, world, sit.shotgun),
+        lava: sit.lava ? { under_you: sit.lava.under, nearest_cells: sit.lava.cells, direction: sit.lava.direction } : null,
         recent,
+        // Last on purpose: right after `weapon` Jev never took the shotgun (0 of 6), here 6 of 6.
+        weapon_state: weaponState(world, sit),
     }
+    if ((extra.stalledMs ?? 0) >= STALL_FACT_MS) state.stalled = `standing still for ${((extra.stalledMs ?? 0) / 1000).toFixed(1)} s`
+    return state
 }
+
+export const STALL_FACT_MS = 3000
+export { MEMORY_MS }

@@ -38,18 +38,40 @@ export class SimConsole implements Transport {
     writes = 0
     deaths = 0
     cleared = 0
+    // Time the player stood still with no enemy in sight, and the longest such stretch.
+    idleMs = 0
+    longestIdleMs = 0
+    playMs = 0
+    // Health lost by source.
+    damage = { bite: 0, shot: 0, lava: 0 }
+    private idleRun = 0
     private listeners: Array<(line: string) => void> = []
 
-    constructor(level: number, difficulty: number, run = 1 + Math.floor(Math.random() * 30000), continuous = false) {
+    // `endless`: `level` is the endless depth minus one (procgen level D<level+1>).
+    constructor(level: number, difficulty: number, run = 1 + Math.floor(Math.random() * 30000), continuous = false, endless = false) {
         this.game = loadGame()
         this.api = this.game.corridor
         this.level = level
         this.difficulty = difficulty
         this.continuous = continuous
-        this.session = this.api.startAtLevel(difficulty, level)
+        if (endless) {
+            this.session = this.api.startSession(this.api.RUN_ENDLESS, difficulty)
+            this.session.level = level
+        } else {
+            this.session = this.api.startAtLevel(difficulty, level)
+        }
         this.session.ai = true
         this.link = new this.api.AiLink(run)
         this.enter()
+    }
+
+    // Console reflexes (fire at the crosshair, sidestep a ball about to land), on by default.
+    get reflexes(): boolean {
+        return this.link.reflexes
+    }
+
+    set reflexes(on: boolean) {
+        this.link.reflexes = on
     }
 
     private enter(): void {
@@ -99,8 +121,29 @@ export class SimConsole implements Transport {
         if (this.statuses.at(-1)?.[1] !== status) this.statuses.push([this.frames.length, status])
         const snapshot = api.aiSnapshotDue(this.link) ? (api.aiSnapshot(this.link, this.world, this.difficulty) as string[]) : []
         this.frames.push([input.fwd, input.strafe, input.turn, input.fire ? 1 : 0, input.swap ? 1 : 0])
+        const before = { x: world.x, y: world.y, hp: world.health, shots: world.shots.length }
         api.update(this.world, input, dt)
+        this.measure(before, dt)
         for (const line of snapshot) this.emit(line)
+    }
+
+    private measure(before: { x: number; y: number; hp: number; shots: number }, dt: number): void {
+        const api = this.api
+        const world = this.world
+        this.playMs += dt
+        const fighting = world.enemies.some((e: { dead: boolean; x: number; y: number }) => !e.dead && api.canSee(world, world.x, world.y, e.x, e.y))
+        if (world.x === before.x && world.y === before.y && !fighting && !world.won) {
+            this.idleRun += dt
+            this.idleMs += dt
+            this.longestIdleMs = Math.max(this.longestIdleMs, this.idleRun)
+        } else {
+            this.idleRun = 0
+        }
+        const lost = before.hp - world.health
+        if (lost <= 0) return
+        if (world.shots.length < before.shots && world.events.includes("hurt")) this.damage.shot += lost
+        else if (api.lavaAt(world, world.x >> 10, world.y >> 10)) this.damage.lava += lost
+        else this.damage.bite += lost
     }
 }
 

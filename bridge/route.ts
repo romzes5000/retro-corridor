@@ -19,15 +19,15 @@ export function centre(api: LogicApi, c: number): number {
 }
 
 // Walkable for planning: floor without lava, plain doors and keyed doors whose key is in `keys`.
-export function passable(api: LogicApi, world: World, cx: number, cy: number, keys: number): boolean {
+export function passable(api: LogicApi, world: World, cx: number, cy: number, keys: number, avoidLava = true): boolean {
     const tile = api.tileAt(world, cx, cy)
-    if (tile === api.TILE_FLOOR) return !api.lavaAt(world, cx, cy)
+    if (tile === api.TILE_FLOOR) return !avoidLava || !api.lavaAt(world, cx, cy)
     if (!api.isDoor(tile)) return false
     const door = api.doorAt(world, cx, cy)
     return door.key === 0 || (keys & door.key) !== 0
 }
 
-export function findPath(api: LogicApi, world: World, from: Cell, to: Cell, keys: number = world.keys): Cell[] {
+export function findPath(api: LogicApi, world: World, from: Cell, to: Cell, keys: number = world.keys, avoidLava = true): Cell[] {
     const key = (c: Cell) => c[1] * world.w + c[0]
     const prev = new Map<number, number>()
     const queue: Cell[] = [from]
@@ -37,7 +37,7 @@ export function findPath(api: LogicApi, world: World, from: Cell, to: Cell, keys
         if (cur[0] === to[0] && cur[1] === to[1]) break
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
             const next: Cell = [cur[0] + dx, cur[1] + dy]
-            if (!passable(api, world, next[0], next[1], keys) || prev.has(key(next))) continue
+            if (!passable(api, world, next[0], next[1], keys, avoidLava) || prev.has(key(next))) continue
             prev.set(key(next), key(cur))
             queue.push(next)
         }

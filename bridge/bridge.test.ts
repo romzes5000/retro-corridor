@@ -131,20 +131,26 @@ test("наблюдение: факты на английском, без ком�
     assert.doesNotMatch(JSON.stringify(state), /[а-яё]/i)
 })
 
-test("наблюдение: враг за стеной не в списке, а в счётчике; attack на него откатывается на продвижение", () => {
+test("наблюдение: враг за стеной не попадает в факты ни списком, ни счётчиком; attack на него — продвижение", () => {
     const world = api.createWorld(["#######", "#S...X#", "#######", "#..E..#", "#######"], 0)
+    world.enemies[0].awake = true
+    world.enemies[0].hunting = true
     const sit = situate(api, world)
     assert.equal(sit.enemies.length, 0)
-    assert.equal(sit.hidden, 1)
     const state = facts(api, world, sit, [])
     assert.equal((state.enemies as unknown[]).length, 0)
-    assert.equal(state.enemies_behind_walls, 1)
+    assert.equal("enemies_behind_walls" in state, false)
+    assert.doesNotMatch(JSON.stringify(state), /behind_walls/)
+    assert.deepEqual(state.last_seen, [])
     assert.equal(decide(api, world, sit, "attack").action, "advance")
+    assert.equal(sit.back, null, "от невидимого врага, которого не помним, не отступаем")
+    assert.equal(decide(api, world, sit, "retreat").action, "advance", "retreat без угрозы — продвижение")
 })
 
 test("решения: каждое действие Jev даёт свою команду, невозможное откатывается на продвижение", () => {
     const world = api.createWorld(["#########", "#S....E.#", "#..H....#", "#########"], 0)
     world.enemies[0].sees = true
+    world.health = 50
     const sit = situate(api, world)
     const got = (a: (typeof ACTIONS)[number]) => {
         const d = decide(api, world, sit, a)
@@ -154,12 +160,16 @@ test("решения: каждое действие Jev даёт свою ком
     assert.deepEqual(got("attack"), ["attack", CMD.attack, 0, 0])
     assert.deepEqual(got("dodge_left"), ["dodge_left", CMD.strafe, 0, 0])
     assert.deepEqual(got("dodge_right"), ["dodge_right", CMD.strafe, 1, 0])
-    assert.deepEqual(got("heal"), ["heal", CMD.goto, 3, 1], "к аптечке: две клетки по прямой")
+    const heal = decide(api, world, sit, "heal")
+    assert.deepEqual([heal.action, heal.cmd, heal.a, heal.b], ["heal", CMD.goto, 3, 1], "к аптечке: до поворота")
+    assert.deepEqual(heal.route, [[3, 2]], "дальше — в клетку аптечки")
     assert.equal(got("ammo")[0], "wait", "патронов нет — как advance")
+    assert.equal(got("weapon")[0], "wait", "дробовика на карте нет — как advance")
     assert.deepEqual(got("open").slice(0, 2), ["open", CMD.use])
-    assert.deepEqual(got("retreat"), ["retreat", CMD.goto, 1, 2], "прочь от врага")
+    assert.deepEqual(got("retreat"), ["retreat", CMD.attack, 0, 1], "отход спиной с огнём по видимому врагу")
     world.ammo = 0
     assert.equal(decide(api, world, sit, "attack").action, "wait", "без патронов не атакует")
+    assert.deepEqual(got("retreat"), ["retreat", CMD.goto, 1, 2], "без патронов — шаг прочь от врага")
     for (const a of ACTIONS) assert.ok(decide(api, world, sit, a).label.length <= 8)
 })
 
@@ -272,8 +282,16 @@ test("мост: тело ящика пишется раньше seq, новый 
 })
 
 test("фейковый Jev: уворот на безопасную сторону раньше атаки, иначе вперёд", () => {
-    const base = { health: 100, ammo: 10, enemies: [], fireballs: [], door_ahead: "none", nearest_medkit: null, nearest_ammo: null }
+    const base = { health: 100, health_state: "ok", ammo: 10, enemies: [], fireballs: [], door_ahead: "none", medkit: null, ammo_pickup: null, shotgun: null }
     assert.equal(fakePick(base), "advance")
+    const medkit = { steps: 3, direction: "ahead", detour_steps: 4 }
+    assert.equal(fakePick({ ...base, health: 30, health_state: "critical", medkit }), "heal")
+    assert.equal(fakePick({ ...base, health: 30, health_state: "critical", medkit: { ...medkit, detour_steps: 9 } }), "advance", "крюк длинный")
+    assert.equal(fakePick({ ...base, shotgun: { steps: 4, direction: "left", detour_steps: 4 } }), "weapon")
+    assert.equal(fakePick({ ...base, shotgun: { steps: 14, direction: "left", detour_steps: 14 } }), "advance")
+    const biting = [{ distance: 0.8, sees_you: true, in_crosshair: false, in_bite_range: true }]
+    assert.equal(fakePick({ ...base, health: 20, health_state: "critical", enemies: biting }), "retreat")
+    assert.equal(fakePick({ ...base, enemies: biting }), "attack", "здоровья хватает — бьёт")
     assert.equal(fakePick({ ...base, enemies: [{ distance: 3, sees_you: true, in_crosshair: false }] }), "attack")
     assert.equal(fakePick({ ...base, enemies: [{ distance: 3, sees_you: true, in_crosshair: false }], fireballs: [{ hits_in_ms: 300, safe_side: "left" }] }), "dodge_left")
     assert.equal(fakePick({ ...base, door_ahead: "closed" }), "open")
@@ -369,7 +387,7 @@ test("сценарий: Jev отвечает дольше 1200 мс — игра
     const bridge = await drive(sim, async () => ({ action: "advance", confidence: 1, danger: null, cost: 0, latencyMs: 0, error: "" }), 1400, 8000)
     assert.ok(bridge.stats.stale >= 3, `stale ${bridge.stats.stale}`)
     assert.deepEqual([sim.world.x, sim.world.y], [x0, y0])
-    assert.equal(api.aiStatus(sim.link), "NO LINK", "без принятых команд — NO LINK на экране")
+    assert.equal(api.aiStatus(sim.link), api.AI_NO_LINK, "без принятых команд — NO LINK на экране")
 })
 
 test("сценарий: Jev недоступен — мост шлёт wait, игрок стоит, мост не падает", async () => {
