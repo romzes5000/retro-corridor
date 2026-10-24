@@ -124,6 +124,9 @@ async function runConsole(fake: boolean): Promise<void> {
     usb.open()
     console.log(`HF2 mode ${await usb.bininfo()} (2 = game running), ${fake ? "fake picks" : jevModel()}, log ${log.file}`)
     const started = Date.now()
+    usb.onLine((line) => {
+        if (!line.startsWith("AI ")) console.log(`console: ${line}`)
+    })
     const bridge = new Bridge(api, usb, jev, (rec) => {
         log.write(rec)
         printDecision(rec)
