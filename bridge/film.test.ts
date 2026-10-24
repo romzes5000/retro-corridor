@@ -174,6 +174,28 @@ test("проигрыватель: после победы или на новом
     assert.throws(() => [...new FilmPlayer(api, [{ k: "s", snap: broken }]).frames()], /version mismatch/)
 })
 
+test("запись и проигрыватель: AI HUMAN закрывает отрезок табличкой PLAYER, после передачи ИИ игрок не плывёт от места перехвата", () => {
+    const { world, link } = hangar()
+    const x0 = world.x
+    const out: FilmRecord[] = []
+    const rec = new FilmRecorder((r) => out.push(r))
+    const send = (t: number) => {
+        link.clock = t
+        for (const line of api.aiSnapshot(link, world, api.DIFF_NORMAL) as string[]) rec.line(line)
+    }
+    send(0)
+    send(250)
+    rec.line("AI HUMAN")
+    world.x += 3000
+    send(300)
+    send(550)
+    assert.deepEqual(out[2], { k: "end", t: 250, result: "human" })
+    const frames = collect(new FilmPlayer(api, out))
+    assert.deepEqual([frameAt(frames, 280).x, frameAt(frames, 280).banner], [x0, "PLAYER"], "хвост отрезка ИИ стоит на месте перехвата")
+    assert.equal(frameAt(frames, 300).x, x0 + 3000, "новый отрезок начинается с места передачи")
+    assert.equal(frameAt(frames, 300).banner, "")
+})
+
 test("кадр в rgb по палитре; ffmpeg увеличивает 160x120 в 4 раза без сглаживания", () => {
     const img = { width: 2, height: 1, pixels: new Uint8Array([0, 1]) } as never
     assert.deepEqual([...toRgb(img, [[1, 2, 3], [4, 5, 6]])], [1, 2, 3, 4, 5, 6])

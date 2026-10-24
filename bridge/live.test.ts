@@ -75,6 +75,28 @@ test("живой кадр: без снимков дольше GAP_MS — NO SIGN
     assert.equal(live.frame()?.banner, "")
 })
 
+test("живой кадр: перехват игроком — табличка PLAYER вместо NO SIGNAL; после передачи ИИ — новый отрезок без хвоста и без сглаживания через прыжок", () => {
+    let wall = 0
+    const live = new LivePlayer(game, () => wall)
+    const { world, link } = hangar()
+    live.push(snap(link, world, 0))
+    wall = 250
+    live.push(snap(link, world, 250))
+    live.push({ k: "end", t: 250, result: "human" })
+    wall = 250 + GAP_MS * 10
+    assert.equal(live.frame()?.banner, "PLAYER", "пока играет человек")
+    world.x += 3000
+    live.push(snap(link, world, 500))
+    assert.equal(live.frame(), null, "хвоста старого отрезка нет: ждём второй снимок нового")
+    wall += 250
+    live.push(snap(link, world, 750))
+    const f = live.frame()
+    assert.equal(f?.banner, "")
+    assert.equal(f?.world.x, world.x, "от места перехвата к месту передачи не плывёт")
+    const note = new LiveBoard(api, live, null).record({ kind: "human", at: 0 })
+    assert.equal(note?.kind, "human")
+})
+
 test("живой кадр: решения Jev уходят подписчику; кадр — 19 200 индексов палитры", () => {
     let wall = 0
     const live = new LivePlayer(game, () => wall)

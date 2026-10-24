@@ -37,7 +37,8 @@ export interface Snapshot {
     ack: { seq: number; result: string; stale: boolean }
 }
 
-export type Message = { kind: "snapshot"; snap: Snapshot } | { kind: "won" } | { kind: "dead" }
+// `human`: the player took the controls mid-level (AI HUMAN); snapshots resume once they hand back.
+export type Message = { kind: "snapshot"; snap: Snapshot } | { kind: "won" } | { kind: "dead" } | { kind: "human" }
 
 function fields(rest: string): Record<string, string> {
     const out: Record<string, string> = {}
@@ -73,6 +74,7 @@ export class Parser {
         const rest = line.slice(4 + tag.length)
         if (tag === "WON") return { kind: "won" }
         if (tag === "DEAD") return { kind: "dead" }
+        if (tag === "HUMAN") return { kind: "human" }
         if (tag === "S") {
             const f = fields(rest)
             this.cur = {

@@ -19,7 +19,25 @@ import { Shadow } from "./shadow.ts"
 export type FilmRecord =
     | { k: "s"; snap: Snapshot }
     | { k: "j"; t: number; label: string; conf: number; latency: number; danger: number | null }
-    | { k: "end"; t: number; result: "won" | "dead" }
+    | { k: "end"; t: number; result: SegmentEnd }
+
+// How an AI segment ended: a win, a death, or the player taking the controls.
+export type SegmentEnd = "won" | "dead" | "human"
+
+export function endBanner(end: SegmentEnd): string {
+    switch (end) {
+        case "won":
+            return "AI WON"
+        case "dead":
+            return "AI DEAD"
+        case "human":
+            return "PLAYER"
+        default: {
+            const never: never = end
+            return never
+        }
+    }
+}
 
 // Snapshots further apart than this (pause, lost link) are not interpolated across.
 export const GAP_MS = 1500
@@ -89,10 +107,11 @@ export interface FilmFrame {
 
 interface Segment {
     snaps: Snapshot[]
-    end: "won" | "dead" | null
+    end: SegmentEnd | null
 }
 
-// One segment per level attempt: a new run, level or map, or a won/dead record, starts the next.
+// One segment per stretch of AI play: a new run, level or map, or an end record (won, dead, the
+// player took over), starts the next, so a hand-back is never interpolated from where they took over.
 function segments(records: FilmRecord[]): Segment[] {
     const out: Segment[] = []
     let cur: Segment | null = null
@@ -153,7 +172,7 @@ export class FilmPlayer {
                     events,
                     line: jevLine(j),
                     alert: jevAlert(j, player),
-                    banner: t > last && seg.end ? (seg.end === "won" ? "AI WON" : "AI DEAD") : "",
+                    banner: t > last && seg.end ? endBanner(seg.end) : "",
                 }
             }
         }

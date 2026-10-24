@@ -269,14 +269,17 @@ namespace corridorRender {
         return s.length * 4 * scale - scale
     }
 
+    // A glyph in corridorArt.FONT: 15 bits and a newline.
+    export const FONT_STRIDE = 16
+
     export function text(target: Image, s: string, x: number, y: number, c: number, scale: number): void {
         let cx = x
         for (let i = 0; i < s.length; i++) {
             const g = corridorArt.GLYPHS.indexOf(s.charAt(i))
             if (g >= 0) {
-                const bits = corridorArt.FONT[g]
+                const at = g * FONT_STRIDE
                 for (let b = 0; b < 15; b++) {
-                    if (bits.charAt(b) == "1") {
+                    if (corridorArt.FONT.charAt(at + b) == "1") {
                         target.fillRect(cx + (b % 3) * scale, y + Math.idiv(b, 3) * scale, scale, scale, c)
                     }
                 }
@@ -608,15 +611,20 @@ namespace corridorRender {
         centered(target, "A TITLE", 80, 6, 1)
     }
 
+    export const PAUSE_ITEM_Y = 33
+    export const PAUSE_ITEM_STEP = 9
+    export const PAUSE_HINT_Y = 81
+
     function drawPause(target: Image, pause: corridor.Pause): void {
-        panel(target, 14, 72, 6)
-        centered(target, "PAUSED", 20, 4, 2)
-        const labels = ["RESUME", "MUSIC " + (pause.music ? "ON" : "OFF"), "- " + corridor.DIFF_NAMES[pause.difficulty] + " +", "QUIT"]
+        panel(target, 10, 82, 6)
+        centered(target, "PAUSED", 16, 4, 2)
+        const labels = ["RESUME", "MUSIC " + (pause.music ? "ON" : "OFF"), "- " + corridor.DIFF_NAMES[pause.difficulty] + " +",
+            pause.ai ? "TAKE OVER" : "GIVE TO AI", "QUIT"]
         for (let i = 0; i < labels.length; i++) {
             const sel = i == pause.index
-            centered(target, sel ? "> " + labels[i] : labels[i], 38 + i * 10, sel ? 4 : 1, 1)
+            centered(target, sel ? "> " + labels[i] : labels[i], PAUSE_ITEM_Y + i * PAUSE_ITEM_STEP, sel ? 4 : 1, 1)
         }
-        centered(target, "B BACK", 78, 6, 1)
+        centered(target, "B BACK", PAUSE_HINT_Y, 6, 1)
     }
 
     function drawOverlay(target: Image, world: corridor.World, view: View): void {

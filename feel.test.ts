@@ -108,7 +108,7 @@ test("долгий B без стрелок ставит паузу один ра
 })
 
 test("меню паузы: стрелки, музыка, сложность, продолжить и выход", () => {
-    const pause = new api.Pause(true, api.DIFF_NORMAL)
+    const pause = new api.Pause(true, api.DIFF_NORMAL, false)
     const pad = new api.Pad()
     const step = (dirs: number, a = false, b = false) => {
         pad.tapDirs = dirs
@@ -129,6 +129,9 @@ test("меню паузы: стрелки, музыка, сложность, п�
     step(api.DIR_LEFT)
     step(api.DIR_LEFT)
     assert.equal(pause.difficulty, api.DIFF_EASY)
+    step(api.DIR_DOWN)
+    assert.equal(step(api.DIR_RIGHT), api.PACT_NONE, "стрелки на пункте пилота ничего не делают")
+    assert.equal(step(0, true), api.PACT_PILOT)
     step(api.DIR_DOWN)
     assert.equal(step(0, true), api.PACT_QUIT)
     step(api.DIR_DOWN)

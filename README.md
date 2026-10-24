@@ -42,7 +42,7 @@ fixed-point math, no floats in the hot loop.
 | B + left/right | Strafe |
 | B tap | Automap |
 | B double tap | Switch weapon |
-| B hold | Pause menu (music, difficulty, quit) |
+| B hold | Pause menu (music, difficulty, take over / give to AI, quit) |
 | Menu | System menu of the console |
 
 ## Build and flash
@@ -90,8 +90,14 @@ the bridge overrides Jev's pick with advance once.
 
 The screen shows `JEV ATTACK 84% 230MS` (tactic, confidence, model latency), red when Jev says
 danger is high, or `NO LINK - RUN NPM RUN AI` after 3 s without commands. A on `PLAYER` in the
-title menu toggles between you and AI. AI runs never set records; after a death the level restarts
-by itself, after a win the next one starts. Hold B for the pause menu, `QUIT` returns control to you.
+title menu toggles between you and AI. After a death the level restarts by itself, after a win the
+next one starts. Hold B for the pause menu, `QUIT` returns control to you.
+
+`TAKE OVER` in the pause menu hands you the controls mid-level: same level, same spot, health and
+ammo. The console sends `AI HUMAN` and goes quiet; the bridge drops what Jev planned, and the film and
+live view show `PLAYER` instead of smoothing across your stretch. `GIVE TO AI` hands the level back
+to Jev from wherever you are, including a level you started yourself. Commands planned before the
+take-over are dropped as stale. A run where the AI played any part never sets records.
 
 ```bash
 export OPENROUTER_KEY=...            # an OpenRouter API key; never commit it

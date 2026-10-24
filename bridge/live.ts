@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net"
 import { rgbList } from "../demo/frames.ts"
 import { FakeImage } from "../fake-image.ts"
 import type { Game, LogicApi, World } from "../load-logic.ts"
-import { drawBanner, FRAME_MS, GAP_MS, jevAlert, jevLine, SegmentPlayer, TAIL_MS, type FilmRecord, type JevRecord } from "./film.ts"
+import { drawBanner, endBanner, FRAME_MS, GAP_MS, jevAlert, jevLine, SegmentPlayer, TAIL_MS, type FilmRecord, type JevRecord, type SegmentEnd } from "./film.ts"
 import { learnedLine, lessonWhere, type Lesson, type LessonStore } from "./lessons.ts"
 import { emptyStats, percentile, type LogRecord, type Stats } from "./loop.ts"
 import { MAP_PAGE, MAP_PANEL, MAP_SCRIPT, MAP_STYLE, OVERLAY_MS } from "./map.ts"
@@ -30,7 +30,7 @@ export interface LiveFrame {
 
 interface Ended {
     seg: SegmentPlayer
-    end: "won" | "dead"
+    end: SegmentEnd
     until: number
 }
 
@@ -46,8 +46,9 @@ export class LivePlayer {
     private readonly img = new FakeImage(160, 120)
     private seg: SegmentPlayer | null = null
     private key = ""
-    private end: "won" | "dead" | null = null
-    // Last attempt, kept on screen with its banner for TAIL_MS after it ended.
+    private end: SegmentEnd | null = null
+    // Last attempt, kept on screen with its banner for TAIL_MS after it ended; not after the
+    // player's own stretch, which the AI picks up live.
     private ended: Ended | null = null
     // Latest snapshot: console time and the wall time it arrived.
     private anchor = { t: 0, wall: 0 }
@@ -83,7 +84,7 @@ export class LivePlayer {
         const snap = rec.snap
         const key = `${snap.run}:${snap.lvl}:${snap.hash}`
         if (!this.seg || key !== this.key || this.end) {
-            if (this.seg && this.end) this.ended = { seg: this.seg, end: this.end, until: this.now() + TAIL_MS }
+            if (this.seg && this.end && this.end !== "human") this.ended = { seg: this.seg, end: this.end, until: this.now() + TAIL_MS }
             try {
                 this.seg = new SegmentPlayer(this.game.corridor, snap)
                 this.problem = ""
@@ -107,7 +108,7 @@ export class LivePlayer {
         const wall = this.now()
         if (this.ended && wall < this.ended.until) {
             const { seg, end } = this.ended
-            return this.draw(seg, seg.lastT, 0, end === "won" ? "AI WON" : "AI DEAD")
+            return this.draw(seg, seg.lastT, 0, endBanner(end))
         }
         this.ended = null
         const seg = this.seg
@@ -116,7 +117,7 @@ export class LivePlayer {
         const t = Math.max(this.t, seg.snaps[0].t, Math.min(seg.lastT, this.anchor.t + since - LIVE_DELAY_MS))
         const dt = this.t === -Infinity ? FRAME_MS : t - this.t
         this.t = t
-        const banner = this.end ? (this.end === "won" ? "AI WON" : "AI DEAD") : since > GAP_MS ? NO_SIGNAL : ""
+        const banner = this.end ? endBanner(this.end) : since > GAP_MS ? NO_SIGNAL : ""
         return this.draw(seg, t, dt, banner, seg.frameAt(t, dt))
     }
 
@@ -178,7 +179,7 @@ export interface LiveStatus {
 }
 
 export interface LiveNote {
-    kind: "lesson" | "won" | "dead" | "watchdog" | "override" | "heal" | "error"
+    kind: "lesson" | "won" | "dead" | "watchdog" | "override" | "heal" | "error" | "human"
     text: string
 }
 
@@ -222,6 +223,9 @@ export class LiveBoard {
                 return rec.learned ? { kind: "lesson", text: learnedLine(rec.learned) } : null
             case "skip":
                 return { kind: "error", text: `skipped: ${rec.reason ?? ""}` }
+            case "human":
+                this.active = null
+                return { kind: "human", text: "the player took the controls, Jev waits for the hand-back" }
             default: {
                 const never: never = rec.kind
                 return never
@@ -439,7 +443,7 @@ const PAGE = `<!doctype html>
   #feed li.danger, #feed li.dead, #feed li.error { color: #e55; }
   #feed li.won { color: #5c5; }
   #feed li.lesson, #feed li.override { color: #fc0; }
-  #feed li.heal, #feed li.watchdog { color: #6af; }
+  #feed li.heal, #feed li.watchdog, #feed li.human { color: #6af; }
 ${MAP_STYLE}
 </style>
 </head>

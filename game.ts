@@ -22,7 +22,7 @@ namespace corridor {
         // Campaign level the run started from; only full runs (0) set time records.
         start: number
         difficulty: number
-        // Played by the AI over the USB link; such runs never set records.
+        // The AI played some of it over the USB link; such runs never set records.
         ai: boolean
         health: number
         ammo: number
@@ -230,25 +230,31 @@ namespace corridor {
     export const PAUSE_RESUME = 0
     export const PAUSE_MUSIC = 1
     export const PAUSE_DIFFICULTY = 2
-    export const PAUSE_QUIT = 3
-    export const PAUSE_ITEMS = 4
+    export const PAUSE_PILOT = 3
+    export const PAUSE_QUIT = 4
+    export const PAUSE_ITEMS = 5
 
     export const PACT_NONE = 0
     export const PACT_RESUME = 1
     export const PACT_QUIT = 2
+    export const PACT_PILOT = 3
 
     export class Pause {
         index: number
         music: boolean
         difficulty: number
-        constructor(music: boolean, difficulty: number) {
+        // The AI has the controls: the pilot item reads TAKE OVER, otherwise GIVE TO AI.
+        ai: boolean
+        constructor(music: boolean, difficulty: number, ai: boolean) {
             this.index = PAUSE_RESUME
             this.music = music
             this.difficulty = difficulty
+            this.ai = ai
         }
     }
 
-    // B or A on RESUME closes the pause; A on QUIT leaves to the title; music and difficulty toggle in place.
+    // B or A on RESUME closes the pause; A on QUIT leaves to the title; A on the pilot item hands the
+    // controls over (PACT_PILOT) and closes the pause; music and difficulty toggle in place.
     export function pauseStep(pause: Pause, pad: Pad): number {
         if (pad.tapB || pad.longB) return PACT_RESUME
         if ((pad.tapDirs & DIR_UP) != 0) pause.index = (pause.index + PAUSE_ITEMS - 1) % PAUSE_ITEMS
@@ -263,6 +269,7 @@ namespace corridor {
         if (!pad.tapA) return PACT_NONE
         if (pause.index == PAUSE_RESUME) return PACT_RESUME
         if (pause.index == PAUSE_QUIT) return PACT_QUIT
+        if (pause.index == PAUSE_PILOT) return PACT_PILOT
         return PACT_NONE
     }
 

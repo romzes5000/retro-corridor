@@ -281,6 +281,44 @@ test("мост: тело ящика пишется раньше seq, новый 
     assert.equal(bridge.stats.decisions, 2)
 })
 
+test("мост: AI HUMAN — ответ Jev в полёте не пишется в ящик, после передачи ИИ решение на свежий снимок", async () => {
+    const session = api.startSession(api.RUN_CAMPAIGN, api.DIFF_NORMAL)
+    const world = api.enterLevel(session)
+    const link = new api.AiLink(600)
+    api.aiEnterLevel(link, session, world)
+    const transport = new FakeTransport()
+    const log: LogRecord[] = []
+    const asked: number[] = []
+    let release: () => void = () => {}
+    const jev: JevFn = async (state) => {
+        asked.push(asked.length)
+        if (asked.length === 1) await new Promise<void>((done) => { release = done })
+        return fakeJev(state)
+    }
+    const bridge = new Bridge(api, transport, jev, (r) => log.push(r), Date.now, 41)
+    assert.deepEqual(new Parser().line("AI HUMAN"), { kind: "human" })
+
+    transport.send(api.aiSnapshot(link, world, api.DIFF_NORMAL) as string[])
+    transport.send([api.AI_HUMAN])
+    release()
+    await bridge.idle()
+    assert.equal(transport.writes.length, 0, "команда на снимок до перехвата не уходит")
+    assert.equal(bridge.stats.decisions, 0)
+    assert.equal(bridge.stats.dead + bridge.stats.won, 0, "перехват — не смерть и не победа")
+    assert.deepEqual(log.map((r) => r.kind), ["human"])
+
+    world.x += 2048
+    api.aiHandBack(link, session)
+    const resumed = api.aiSnapshot(link, world, api.DIFF_NORMAL) as string[]
+    transport.send(resumed)
+    await bridge.idle()
+    assert.equal(asked.length, 2)
+    assert.equal(bridge.stats.decisions, 1)
+    assert.equal(transport.writes[1].data[2], link.obs, "ответ на первый снимок после передачи")
+    const decision = log.find((r) => r.kind === "decision")
+    assert.equal(decision?.n, link.obs)
+})
+
 test("фейковый Jev: уворот на безопасную сторону раньше атаки, иначе вперёд", () => {
     const base = { health: 100, health_state: "ok", ammo: 10, enemies: [], fireballs: [], door_ahead: "none", medkit: null, ammo_pickup: null, shotgun: null }
     assert.equal(fakePick(base), "advance")
@@ -378,6 +416,63 @@ test("сценарий: как на приставке — смерть даёт
     await run(2000)
     assert.ok(log.some((r) => r.kind === "decision" && r.lvl === "1"), "мост перестроил теневой мир под новый уровень")
     assert.deepEqual(lines, ["AI DEAD", "AI WON"])
+})
+
+test("сценарий: посреди HANGAR игрок перехватывает управление, ходит сам и отдаёт обратно — ИИ доигрывает с того же места, без устаревших команд и рекорда", async () => {
+    const sim = new SimConsole(levelIndex(api, "HANGAR"), api.DIFF_NORMAL)
+    const lines: string[] = []
+    sim.onLine((l) => lines.push(l))
+    const log: LogRecord[] = []
+    const pending: Array<{ at: number; done: () => void }> = []
+    const jev: JevFn = async (state) => {
+        const answer = await fakeJev(state)
+        await new Promise<void>((done) => pending.push({ at: sim.clock + 500, done }))
+        return { ...answer, latencyMs: 500 }
+    }
+    const bridge = new Bridge(sim.api, sim, jev, (rec) => log.push(rec), () => sim.clock, 100)
+    const run = async (ms: number) => {
+        for (let t = 0; t < ms && !sim.result; t += 20) {
+            sim.step()
+            for (const p of pending.filter((p) => p.at <= sim.clock)) {
+                pending.splice(pending.indexOf(p), 1)
+                p.done()
+            }
+            await new Promise((resolve) => setImmediate(resolve))
+        }
+    }
+    await run(3000)
+    assert.ok(bridge.stats.decisions > 0)
+    const world = sim.world
+    const ang = world.ang
+    const clock = sim.link.clock
+    const walk = new sim.api.Input()
+    walk.turn = 1
+    sim.takeOver(walk)
+    const humanFrom = lines.length
+    await run(700)
+    assert.deepEqual(lines.slice(humanFrom - 1, humanFrom), ["AI HUMAN"])
+    assert.equal(lines.slice(humanFrom).filter((l) => l.startsWith("AI ")).length, 0, "пока играет человек, снимков нет")
+    assert.equal(sim.link.clock, clock, "часы связи стоят")
+    assert.equal(sim.world, world, "уровень тот же, не перезапущен")
+    assert.notEqual(world.ang, ang, "ввод человека применяется")
+    const given = `AI P ${world.x} ${world.y} ${world.ang} ${world.health} ${world.ammo} `
+    const writesBefore = sim.writes
+
+    sim.handBack()
+    const resumeFrom = lines.length
+    await run(20)
+    assert.ok(lines[resumeFrom + 1]?.startsWith(given), `ИИ продолжает с места, здоровья и патронов игрока: ${lines[resumeFrom + 1]}`)
+    await run(120000)
+    assert.equal(sim.result, "won", `застрял: клетка ${sim.world.x >> 10},${sim.world.y >> 10}`)
+    assert.equal(bridge.stats.stale, 0, "ни одна команда не пришла на снимок до перехвата")
+    assert.ok(sim.writes > writesBefore)
+    const human = log.findIndex((r) => r.kind === "human")
+    assert.ok(human > 0)
+    assert.equal(log.filter((r) => r.kind === "human").length, 1)
+    assert.ok(log.slice(human + 1).some((r) => r.kind === "decision"), "после передачи Jev снова решает")
+    assert.equal(bridge.stats.won, 1)
+    assert.equal(sim.session.ai, true)
+    assert.equal(api.noteRun(new api.Records(), sim.session), false, "уровень с ИИ рекорд не ставит")
 })
 
 test("сценарий: Jev отвечает дольше 1200 мс — игра отбрасывает команды как stale и не идёт вслепую", async () => {

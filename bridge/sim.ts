@@ -64,6 +64,8 @@ export class SimConsole implements Transport {
     playMs = 0
     // Health lost by source.
     damage = { bite: 0, shot: 0, lava: 0 }
+    // Played every frame while the player holds the controls (takeOver() to handBack()).
+    humanInput: any = null
     private idleRun = 0
     private listeners: Array<(line: string) => void> = []
 
@@ -117,13 +119,25 @@ export class SimConsole implements Transport {
         for (const l of this.listeners) l(line)
     }
 
+    // TAKE OVER in the pause menu: from now on the level plays `input` (default: stand still).
+    takeOver(input: any = new this.api.Input()): void {
+        this.humanInput = input
+        this.emit(this.api.AI_HUMAN)
+    }
+
+    // GIVE TO AI in the pause menu.
+    handBack(): void {
+        this.humanInput = null
+        this.api.aiHandBack(this.link, this.session)
+    }
+
     step(dt = SIM_DT): void {
         if (this.result) return
         this.clock += dt
         const api = this.api
         const world = this.world
         if (world.won || world.lost) {
-            const end = api.aiEndStep(this.link, world, dt, (line: string) => this.emit(line))
+            const end = this.humanInput ? api.AI_STAY : api.aiEndStep(this.link, world, dt, (line: string) => this.emit(line))
             if (!this.continuous) {
                 this.result = world.won ? "won" : "dead"
             } else if (end === api.AI_REPLAY) {
@@ -136,10 +150,11 @@ export class SimConsole implements Transport {
             }
             return
         }
-        const input = api.aiFrame(this.link, this.world, dt, (i: number) => this.box[i])
-        const status = api.aiStatus(this.link) as string
+        const ai = !this.humanInput
+        const input = ai ? api.aiFrame(this.link, this.world, dt, (i: number) => this.box[i]) : this.humanInput
+        const status = ai ? (api.aiStatus(this.link) as string) : ""
         if (this.statuses.at(-1)?.[1] !== status) this.statuses.push([this.frames.length, status])
-        const snapshot = api.aiSnapshotDue(this.link) ? (api.aiSnapshot(this.link, this.world, this.difficulty) as string[]) : []
+        const snapshot = ai && api.aiSnapshotDue(this.link) ? (api.aiSnapshot(this.link, this.world, this.difficulty) as string[]) : []
         this.frames.push([input.fwd, input.strafe, input.turn, input.fire ? 1 : 0, input.swap ? 1 : 0])
         const before = { x: world.x, y: world.y, hp: world.health, shots: world.shots.length }
         api.update(this.world, input, dt)

@@ -20,7 +20,7 @@ export interface Transport {
 }
 
 export interface LogRecord {
-    kind: "decision" | "won" | "dead" | "skip" | "watchdog" | "lesson"
+    kind: "decision" | "won" | "dead" | "skip" | "watchdog" | "lesson" | "human"
     at: number
     n?: number
     lvl?: string
@@ -194,6 +194,15 @@ export class Bridge {
             this.onEnd(msg.kind)
             return
         }
+        // The player plays on from here: what the AI saw and planned is out of date, and a death
+        // after the hand-back teaches only from what the AI itself played.
+        if (msg.kind === "human") {
+            this.activeIds.clear()
+            this.trace.reset()
+            this.nextAttempt()
+            this.log({ kind: "human", at: this.now(), reason: "the player took the controls" })
+            return
+        }
         const snap = msg.snap
         if (snap.run !== this.run) {
             if (this.run !== -1) this.transport.reset()
@@ -209,6 +218,16 @@ export class Bridge {
         this.mapKey = `${snap.lvl}:${snap.hash}`
         this.latest = snap
         this.kick()
+    }
+
+    // A Jev answer still in flight belongs to the attempt it was asked in and is never written.
+    private nextAttempt(): void {
+        this.attempt++
+        this.history = []
+        this.latest = null
+        this.steps = null
+        this.still = null
+        this.sent = null
     }
 
     // A win credits the lessons used on the way; a death becomes a lesson in the background, so the
@@ -374,12 +393,13 @@ export class Bridge {
         from: Cell,
         lesson: Action | null,
     ): Promise<void> {
+        const attempt = this.attempt
         const answer = await this.jev(state, lesson ? { lesson } : undefined)
         if (answer.error) this.stats.errors++
         else this.stats.picks[answer.action] = (this.stats.picks[answer.action] ?? 0) + 1
         this.stats.latencies.push(answer.latencyMs)
         this.stats.cost += answer.cost
-        if (!this.latest || this.latest.run !== snap.run || this.latest.lvl !== snap.lvl) return
+        if (attempt !== this.attempt || !this.latest || this.latest.run !== snap.run || this.latest.lvl !== snap.lvl) return
         const { decision, note } = choose(answer)
         this.seq = nextSeq(this.seq)
         const box = encodeBox({

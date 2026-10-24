@@ -38,7 +38,22 @@ test("арт: строки одной ширины, текстуры стен к
         assert.equal(rows[0].length, 16, name)
     }
     const glyphs = art.GLYPHS as string
-    assert.equal((art.FONT as string[]).length, glyphs.length)
+    const font = art.FONT as string
+    assert.equal(font.length, glyphs.length * r.FONT_STRIDE, "по глифу на символ")
+    for (let g = 0; g < glyphs.length; g++) assert.match(font.slice(g * r.FONT_STRIDE, (g + 1) * r.FONT_STRIDE), /^[01]{15}\n$/, glyphs[g])
+})
+
+test("шрифт: глиф рисуется ровно по своим 15 битам, соседний символ — со сдвигом на 4", () => {
+    const img = new FakeImage(160, 120)
+    r.text(img as never, "0%", 10, 20, 4, 1)
+    const zero = ["111", "101", "101", "101", "111"]
+    const pct = ["101", "001", "010", "100", "101"]
+    for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 3; x++) {
+            assert.equal(img.getPixel(10 + x, 20 + y) === 4, zero[y][x] === "1", `0: ${x},${y}`)
+            assert.equal(img.getPixel(14 + x, 20 + y) === 4, pct[y][x] === "1", `%: ${x},${y}`)
+        }
+    }
 })
 
 test("затемнение идёт по своей рампе и не светлеет", () => {
@@ -356,11 +371,47 @@ test("след крови виден на полу перед игроком", (
 test("пауза рисует своё меню поверх игры", () => {
     const world = c.createWorld(c.CAMPAIGN, 0)
     const play = frame(world)
-    const paused = frame(world, (v) => { v.pause = new c.Pause(true, c.DIFF_NORMAL) })
-    const moved = frame(world, (v) => { v.pause = new c.Pause(true, c.DIFF_NORMAL); v.pause.index = 3 })
+    const paused = frame(world, (v) => { v.pause = new c.Pause(true, c.DIFF_NORMAL, false) })
+    const moved = frame(world, (v) => { v.pause = new c.Pause(true, c.DIFF_NORMAL, false); v.pause.index = 3 })
     assert.notDeepEqual(paused.pixels, play.pixels)
     assert.notDeepEqual(paused.pixels, moved.pixels, "курсор паузы рисуется")
     assert.equal(paused.getPixel(13, 50), 6)
+})
+
+test("пауза: пункт пилота TAKE OVER при ИИ и GIVE TO AI у игрока, пять пунктов не налезают на B BACK", () => {
+    const world = c.createWorld(c.CAMPAIGN, 0)
+    const ai = frame(world, (v) => { v.pause = new c.Pause(true, c.DIFF_NORMAL, true) })
+    const human = frame(world, (v) => { v.pause = new c.Pause(true, c.DIFF_NORMAL, false) })
+    assert.notDeepEqual(ai.pixels, human.pixels, "подпись пункта зависит от того, кто играет")
+    const rowY = r.PAUSE_ITEM_Y + 3 * r.PAUSE_ITEM_STEP
+    // Text in colour 1 (not selected): its x span is the label width, centred.
+    const span = (img: FakeImage) => {
+        const xs: number[] = []
+        for (let y = rowY; y < rowY + 5; y++) for (let x = 0; x < 160; x++) if (img.getPixel(x, y) === 1) xs.push(x)
+        return [Math.min(...xs), Math.max(...xs) + 1]
+    }
+    const centred = (label: string) => {
+        const w = r.textWidth(label, 1)
+        return [(160 - w) >> 1, ((160 - w) >> 1) + w]
+    }
+    assert.deepEqual(span(ai), centred("TAKE OVER"))
+    assert.deepEqual(span(human), centred("GIVE TO AI"))
+    const row = (img: FakeImage, y0: number) => {
+        const out: number[] = []
+        for (let y = y0; y < y0 + 6; y++) for (let x = 14; x < 146; x++) out.push(img.getPixel(x, y))
+        return out.join(",")
+    }
+    assert.notEqual(row(ai, rowY), row(human, rowY), "разница именно в четвёртой строке")
+    assert.equal(row(ai, r.PAUSE_ITEM_Y), row(human, r.PAUSE_ITEM_Y))
+    for (const img of [ai, human]) {
+        const last = r.PAUSE_ITEM_Y + 4 * r.PAUSE_ITEM_STEP
+        for (let y = last + 6; y < r.PAUSE_HINT_Y; y++) {
+            for (let x = 14; x < 146; x++) assert.equal(img.getPixel(x, y), 15, `пусто между QUIT и B BACK: ${x},${y}`)
+        }
+        const quit = row(img, last)
+        assert.ok(quit.split(",").some((p) => p !== "15"), "QUIT нарисован")
+        assert.ok(row(img, r.PAUSE_HINT_Y).split(",").some((p) => p === "6"), "B BACK нарисован")
+    }
 })
 
 test("пол: пиксель под ногами берётся из нужного текселя по rowDist", () => {

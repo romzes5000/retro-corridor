@@ -112,6 +112,8 @@ const AI_RUN = randint(1, 30000)
 const readAiBox = function (i: number): number {
     return AI_BOX[i]
 }
+// The session's link, entered on every level; `link` is it while the AI drives, null while you do.
+let aiLink: corridor.AiLink = null
 let link: corridor.AiLink = null
 
 let session: corridor.Session = null
@@ -157,7 +159,7 @@ function titleWorld(): corridor.World {
 
 function enter(): corridor.World {
     const next = corridor.enterLevel(session)
-    if (link) corridor.aiEnterLevel(link, session, next)
+    corridor.aiEnterLevel(aiLink, session, next)
     return next
 }
 
@@ -220,7 +222,8 @@ game.onUpdate(function () {
             else session = corridor.startSession(act == corridor.ACT_ENDLESS ? corridor.RUN_ENDLESS : corridor.RUN_CAMPAIGN, difficulty)
             view.menu.levels = false
             session.ai = view.menu.ai
-            link = session.ai ? new corridor.AiLink(AI_RUN) : null
+            aiLink = new corridor.AiLink(AI_RUN)
+            link = session.ai ? aiLink : null
             switchTo(corridorRender.MODE_PLAY, enter())
         }
         return
@@ -255,6 +258,16 @@ game.onUpdate(function () {
         }
         if (act == corridor.PACT_RESUME) {
             view.pause = null
+        } else if (act == corridor.PACT_PILOT) {
+            view.pause = null
+            pad.aLatch = true
+            if (link) {
+                link = null
+                console.log(corridor.AI_HUMAN)
+            } else {
+                corridor.aiHandBack(aiLink, session)
+                link = aiLink
+            }
         } else if (act == corridor.PACT_QUIT) {
             view.pause = null
             noteRecords()
@@ -264,7 +277,7 @@ game.onUpdate(function () {
         return
     }
     if (pad.longB) {
-        view.pause = new corridor.Pause(musicOn, session.difficulty)
+        view.pause = new corridor.Pause(musicOn, session.difficulty, link != null)
         view.mapOpen = false
         return
     }

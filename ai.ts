@@ -677,6 +677,22 @@ namespace corridor {
         return true
     }
 
+    // Logged when the player takes the controls mid-level: the bridge drops what it planned. While
+    // they play the link sleeps: no snapshots, no commands, its clock stands still.
+    export const AI_HUMAN = "AI HUMAN"
+
+    // The AI plays on from wherever the player left the level, and the run can no longer set
+    // records. Commands planned before (in the box or still on the way) answer snapshots that the
+    // jump in obs pushes out of the ring, so they are dropped as stale. The first snapshot goes out
+    // on the next frame.
+    export function aiHandBack(link: AiLink, session: Session): void {
+        session.ai = true
+        link.exec = new AiExec()
+        link.obs += OBS_RING
+        link.label = ""
+        link.snapDue = link.clock
+    }
+
     export const AI_STAY = 0
     export const AI_REPLAY = 1
     export const AI_ADVANCE = 2
