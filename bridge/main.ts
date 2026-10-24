@@ -6,7 +6,8 @@
 // --lag 500 (with --fast: fake answers land 500 ms of sim time later), --no-reflexes, --no-predict,
 // --record demo/ai-hangar.json (inputs of the first won run, for the GIF replay),
 // --check (console only: find the mailbox, listen to the console for 3 s, no Jev),
-// --film (snapshots and decisions to bridge/out/film-*.jsonl; npm run ai:film renders a video).
+// --film (snapshots and decisions to bridge/out/film-*.jsonl; npm run ai:film renders a video),
+// --watch (live view at http://localhost:8787; --watch-port, --watch-host 0.0.0.0 for the LAN).
 // Death lessons are off by default (the bench showed no gain): --lessons turns them on, kept in
 // bridge/out/lessons-console.json or lessons-sim.json; --lessons-file FILE, --lessons-reset (start
 // empty; both imply --lessons); --attempts 10 (sim: retry a level after a death until it is won,
@@ -16,12 +17,13 @@
 import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
-import { loadLogic } from "../load-logic.ts"
+import { loadGame, loadLogic } from "../load-logic.ts"
 import { fakeJev } from "./fake-jev.ts"
 import { FilmRecorder } from "./film.ts"
 import { Hf2Transport } from "./hf2.ts"
 import { jevModel, makeJev, type JevFn } from "./jev.ts"
 import { LessonStore, lessonsFile, lessonsOn, makeReflect, type Lesson, type LessonFlags, type ReflectFn } from "./lessons.ts"
+import { LivePlayer, startWatch, WATCH_PORT, type Watch } from "./live.ts"
 import { addStats, Bridge, emptyStats, percentile, type BridgeOptions, type LogRecord, type Stats } from "./loop.ts"
 import { isBox } from "./mailbox.ts"
 import { recording, SIM_DT, SimConsole, simLevels, type SimLevel } from "./sim.ts"
@@ -36,12 +38,35 @@ function openLog(): { write: (rec: LogRecord) => void; file: string } {
     return { write: (rec) => fs.writeSync(fd, JSON.stringify(rec) + "\n"), file }
 }
 
-// --film: every snapshot and decision to bridge/out/film-*.jsonl, for `npm run ai:film`.
-function openFilm(): { recorder: FilmRecorder; file: string } {
-    fs.mkdirSync(OUT_DIR, { recursive: true })
-    const file = path.join(OUT_DIR.pathname, `film-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`)
-    const fd = fs.openSync(file, "a")
-    return { recorder: new FilmRecorder((rec) => fs.writeSync(fd, JSON.stringify(rec) + "\n")), file }
+interface WatchFlags {
+    port: number
+    host: string
+}
+
+// --film writes every snapshot and decision to bridge/out/film-*.jsonl for `npm run ai:film`;
+// --watch plays the same records live in a browser. Null when neither is on.
+async function openRecording(filming: boolean, watch: WatchFlags | null): Promise<{ recorder: FilmRecorder; close: () => Promise<void> } | null> {
+    if (!filming && !watch) return null
+    let fd: number | null = null
+    if (filming) {
+        fs.mkdirSync(OUT_DIR, { recursive: true })
+        const file = path.join(OUT_DIR.pathname, `film-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`)
+        fd = fs.openSync(file, "a")
+        console.log(`film ${file} (npm run ai:film -- ${path.relative(process.cwd(), file)})`)
+    }
+    let live: LivePlayer | null = null
+    let server: Watch | null = null
+    if (watch) {
+        const game = loadGame()
+        live = new LivePlayer(game)
+        server = await startWatch(game, live, watch)
+        console.log(`watch ${server.url}`)
+    }
+    const recorder = new FilmRecorder((rec) => {
+        if (fd !== null) fs.writeSync(fd, JSON.stringify(rec) + "\n")
+        live?.push(rec)
+    })
+    return { recorder, close: async () => server?.close() }
 }
 
 function pickJev(fake: boolean): JevFn {
@@ -262,16 +287,15 @@ async function checkConsole(): Promise<void> {
     await usb.close()
 }
 
-async function runConsole(fake: boolean, filming: boolean, lessonFlags: LessonFlags): Promise<void> {
+async function runConsole(fake: boolean, filming: boolean, watch: WatchFlags | null, lessonFlags: LessonFlags): Promise<void> {
     const api = loadLogic()
     const jev = pickJev(fake)
     const log = openLog()
     const lessons = openLessons(lessonFlags, "console", fake)
-    const film = filming ? openFilm() : null
     const usb = new Hf2Transport()
     usb.open()
     console.log(`HF2 mode ${await usb.bininfo()} (2 = game running), ${fake ? "fake picks" : jevModel()}, log ${log.file}`)
-    if (film) console.log(`film ${film.file} (npm run ai:film -- ${path.relative(process.cwd(), film.file)})`)
+    const film = await openRecording(filming, watch)
     const started = Date.now()
     usb.onLine((line) => {
         film?.recorder.line(line)
@@ -308,6 +332,9 @@ async function main(): Promise<void> {
             quiet: { type: "boolean", default: false },
             check: { type: "boolean", default: false },
             film: { type: "boolean", default: false },
+            watch: { type: "boolean", default: false },
+            "watch-port": { type: "string", default: String(WATCH_PORT) },
+            "watch-host": { type: "string", default: "127.0.0.1" },
             attempts: { type: "string", default: "1" },
             lessons: { type: "boolean", default: false },
             "lessons-file": { type: "string" },
@@ -319,10 +346,10 @@ async function main(): Promise<void> {
     if (values.fast && !values.fake) throw new Error("--fast needs --fake: real Jev runs in real time")
     const lessonFlags: LessonFlags = { on: values.lessons, file: values["lessons-file"], reset: values["lessons-reset"] }
     if (values.check) return checkConsole()
-    if (values.sim === undefined) return runConsole(values.fake, values.film, lessonFlags)
-    const film = values.film ? openFilm() : null
-    if (film) console.log(`film ${film.file}`)
-    return runSim({
+    const watch = values.watch ? { port: Number(values["watch-port"]), host: values["watch-host"] } : null
+    if (values.sim === undefined) return runConsole(values.fake, values.film, watch, lessonFlags)
+    const film = await openRecording(values.film, watch)
+    await runSim({
         level: values.sim,
         difficulty,
         runs: Number(values.runs),
@@ -338,6 +365,7 @@ async function main(): Promise<void> {
         attempts: Math.max(1, Number(values.attempts)),
         lessons: openLessons(lessonFlags, "sim", values.fake),
     })
+    await film?.close()
 }
 
 main().catch((err) => {

@@ -113,16 +113,23 @@ function segments(records: FilmRecord[]): Segment[] {
     return out.filter((s) => s.snaps.length > 0)
 }
 
+export type JevRecord = Extract<FilmRecord, { k: "j" }>
+
+export const jevLine = (j: JevRecord | null): string => (j ? `JEV ${j.label} ${j.conf}% ${j.latency}MS` : "JEV")
+
+// Red status line: Jev's danger when it gave one, else the console's own threat rule.
+export const jevAlert = (j: JevRecord | null, seg: SegmentPlayer): boolean => (j && j.danger !== null ? j.danger >= ALARM : seg.threat())
+
 // Plays the records back frame by frame on a world rebuilt from the game code.
 export class FilmPlayer {
     private readonly api: LogicApi
     private readonly segs: Segment[]
-    private readonly jev: Array<Extract<FilmRecord, { k: "j" }>>
+    private readonly jev: JevRecord[]
 
     constructor(api: LogicApi, records: FilmRecord[]) {
         this.api = api
         this.segs = segments(records)
-        this.jev = records.filter((r): r is Extract<FilmRecord, { k: "j" }> => r.k === "j")
+        this.jev = records.filter((r): r is JevRecord => r.k === "j")
     }
 
     // Length of the film in console ms, tails included.
@@ -133,44 +140,74 @@ export class FilmPlayer {
     // `stepMs` of console time per frame: FRAME_MS plays at 1x, 2 * FRAME_MS at 2x.
     *frames(stepMs = FRAME_MS): Generator<FilmFrame> {
         for (const seg of this.segs) {
-            const shadow = new Shadow(this.api)
-            const world = shadow.sync(seg.snaps[0])
-            if (!world) throw new Error(`level ${seg.snaps[0].lvl}: ${shadow.problem}`)
-            const dying = new Map<number, number>()
-            let at = 0
-            const start = seg.snaps[0].t
+            const player = new SegmentPlayer(this.api, seg.snaps[0])
+            for (const s of seg.snaps.slice(1)) player.push(s)
             const last = seg.snaps[seg.snaps.length - 1].t
             const stop = last + (seg.end ? TAIL_MS : 0)
-            for (let t = start; t <= stop; t += stepMs) {
-                const events: string[] = []
-                while (at + 1 < seg.snaps.length && seg.snaps[at + 1].t <= t) {
-                    at++
-                    this.changes(world, seg.snaps[at - 1], seg.snaps[at], events, dying, t)
-                }
-                const a = seg.snaps[at]
-                const b = seg.snaps[at + 1]
-                const f = b && b.t - a.t <= GAP_MS ? (t - a.t) / (b.t - a.t) : 0
-                this.place(world, a, f > 0 ? b : null, f, t, stepMs, dying)
+            for (let t = seg.snaps[0].t; t <= stop; t += stepMs) {
+                const events = player.frameAt(t, stepMs)
                 const j = this.latestJev(t)
                 yield {
                     t,
-                    world,
+                    world: player.world,
                     events,
-                    line: j ? `JEV ${j.label} ${j.conf}% ${j.latency}MS` : "JEV",
-                    alert: j && j.danger !== null ? j.danger >= ALARM : this.threat(world),
+                    line: jevLine(j),
+                    alert: jevAlert(j, player),
                     banner: t > last && seg.end ? (seg.end === "won" ? "AI WON" : "AI DEAD") : "",
                 }
             }
         }
     }
 
-    private latestJev(t: number): Extract<FilmRecord, { k: "j" }> | null {
-        let best: Extract<FilmRecord, { k: "j" }> | null = null
+    private latestJev(t: number): JevRecord | null {
+        let best: JevRecord | null = null
         for (const j of this.jev) {
             if (j.t > t) break
             best = j
         }
         return best
+    }
+}
+
+// One level attempt played on a world rebuilt from the game code. Snapshots may keep arriving
+// while it plays; frame times must not go backwards.
+export class SegmentPlayer {
+    readonly world: World
+    readonly snaps: Snapshot[]
+    private readonly api: LogicApi
+    private readonly dying = new Map<number, number>()
+    private at = 0
+
+    constructor(api: LogicApi, first: Snapshot) {
+        const shadow = new Shadow(api)
+        const world = shadow.sync(first)
+        if (!world) throw new Error(`level ${first.lvl}: ${shadow.problem}`)
+        this.api = api
+        this.world = world
+        this.snaps = [first]
+    }
+
+    get lastT(): number {
+        return this.snaps[this.snaps.length - 1].t
+    }
+
+    push(snap: Snapshot): void {
+        this.snaps.push(snap)
+    }
+
+    // Moves the world to console time `t`; returns the game events since the previous frame.
+    frameAt(t: number, dt: number): string[] {
+        const events: string[] = []
+        const snaps = this.snaps
+        while (this.at + 1 < snaps.length && snaps[this.at + 1].t <= t) {
+            this.at++
+            this.changes(this.world, snaps[this.at - 1], snaps[this.at], events, this.dying, t)
+        }
+        const a = snaps[this.at]
+        const b = snaps[this.at + 1]
+        const f = b && b.t - a.t <= GAP_MS ? (t - a.t) / (b.t - a.t) : 0
+        this.place(this.world, a, f > 0 ? b : null, f, t, dt, this.dying)
+        return events
     }
 
     // What happened between two snapshots, as the game's own event names for the renderer.
@@ -260,8 +297,9 @@ export class FilmPlayer {
     }
 
     // Without Jev's danger: the console's own rule, a fireball about to land or a biter in reach.
-    private threat(world: World): boolean {
+    threat(): boolean {
         const api = this.api
+        const world = this.world
         if (world.shots.some((s) => {
             const eta = api.aiShotEta(world, s)
             return eta >= 0 && eta < ALARM_SHOT_MS
@@ -284,13 +322,18 @@ export function* renderFilm(game: Game, records: FilmRecord[], speed = 1): Gener
         view.aiLine = frame.line
         view.aiAlert = frame.alert
         r.draw(img as never, frame.world, view)
-        if (frame.banner) {
-            const w = r.textWidth(frame.banner, 2)
-            r.text(img as never, frame.banner, 80 - (w >> 1) + 1, 51, 15, 2)
-            r.text(img as never, frame.banner, 80 - (w >> 1), 50, frame.banner === "AI WON" ? 5 : 2, 2)
-        }
+        drawBanner(game, img, frame.banner)
         yield { frame, img }
     }
+}
+
+// Big centred caption with a shadow: green for a win, red otherwise.
+export function drawBanner(game: Game, img: FakeImage, banner: string): void {
+    if (!banner) return
+    const r = game.corridorRender
+    const w = r.textWidth(banner, 2)
+    r.text(img as never, banner, 80 - (w >> 1) + 1, 51, 15, 2)
+    r.text(img as never, banner, 80 - (w >> 1), 50, banner === "AI WON" ? 5 : 2, 2)
 }
 
 export function toRgb(img: FakeImage, palette: number[][]): Buffer {
