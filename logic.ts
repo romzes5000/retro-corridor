@@ -40,6 +40,24 @@ namespace corridor {
     export const USE_REACH = 800
     export const USE_COOLDOWN = 250
 
+    export const DIFF_EASY = 0
+    export const DIFF_NORMAL = 1
+    export const DIFF_HARD = 2
+    export const DIFF_NAMES = ["EASY", "NORMAL", "HARD"]
+    // Damage the player takes, percent of nominal, by difficulty.
+    export const DIFF_DAMAGE = [50, 100, 150]
+
+    // Distances (FP) where a positional sound drops to the next quieter set.
+    export const SOUND_NEAR = 3 * 1024
+    export const SOUND_FAR = 7 * 1024
+
+    export const DECALS_MAX = 24
+    export const DECAL_BLOOD = 0
+    export const DECAL_SCORCH = 1
+    export const DIE_FRAME_MS = 110
+    export const GROWL_MIN_MS = 2000
+    export const GROWL_SPREAD_MS = 2000
+
     export const PLAYER_RADIUS = 225
     export const MOVE_SPEED = 2900
     export const STRAFE_SPEED = 2400
@@ -81,6 +99,22 @@ namespace corridor {
         return SIN[(a + (ANGLES >> 2)) & (ANGLES - 1)]
     }
 
+    // Small deterministic PRNG (ZX81 LCG): products stay far below 2^31 on hardware and in Node.
+    export function nextRand(seed: number): number {
+        return (seed * 75 + 74) % 65537
+    }
+
+    export class Rng {
+        seed: number
+        constructor(seed: number) {
+            this.seed = ((seed % 65537) + 65537) % 65537
+        }
+        next(n: number): number {
+            this.seed = nextRand(this.seed)
+            return n <= 1 ? 0 : this.seed % n
+        }
+    }
+
     export const CAMX: number[] = []
     for (let c = 0; c < VIEW_W; c++) {
         CAMX.push(Math.idiv((2 * c + 1 - VIEW_W) * FP, VIEW_W))
@@ -103,8 +137,12 @@ namespace corridor {
         hunting: boolean
         lastX: number
         lastY: number
+        deadMs: number
+        growl: number
         constructor(kind: number, x: number, y: number) {
             this.kind = kind
+            this.deadMs = 0
+            this.growl = 0
             this.x = x
             this.y = y
             this.hunting = false
@@ -118,6 +156,17 @@ namespace corridor {
             this.hurt = 0
             this.attack = 0
             this.walk = 0
+        }
+    }
+
+    export class Decal {
+        x: number
+        y: number
+        kind: number
+        constructor(x: number, y: number, kind: number) {
+            this.x = x
+            this.y = y
+            this.kind = kind
         }
     }
 
@@ -183,7 +232,17 @@ namespace corridor {
         shots: Shot[]
         weapon: number
         hasShotgun: boolean
+        eventDist: number[]
+        decals: Decal[]
+        decalNext: number
+        difficulty: number
+        rng: Rng
         constructor() {
+            this.eventDist = []
+            this.decals = []
+            this.decalNext = 0
+            this.difficulty = DIFF_NORMAL
+            this.rng = new Rng(1)
             this.shots = []
             this.weapon = WEAPON_PISTOL
             this.hasShotgun = false
@@ -304,6 +363,7 @@ namespace corridor {
             }
         }
         setupDoors(world)
+        world.rng = new Rng(world.w * 131 + world.h * 7 + world.enemies.length)
         world.itemsTotal = world.items.length
         world.total = world.enemies.length
         world.ang = ang & (ANGLES - 1)
@@ -476,6 +536,31 @@ namespace corridor {
 
     export function emit(world: World, ev: string): void {
         world.events.push(ev)
+        world.eventDist.push(0)
+    }
+
+    // Event with a source in the world; main.ts picks a quieter sound set the farther it is.
+    export function emitAt(world: World, ev: string, x: number, y: number): void {
+        world.events.push(ev)
+        world.eventDist.push(distance(x, y, world.x, world.y))
+    }
+
+    // 0 loud, 1 mid, 2 quiet.
+    export function soundLevel(dist: number): number {
+        if (dist < SOUND_NEAR) return 0
+        if (dist < SOUND_FAR) return 1
+        return 2
+    }
+
+    // Ring buffer: the 25th decal overwrites the oldest, so memory and draw cost stay flat.
+    export function addDecal(world: World, x: number, y: number, kind: number): void {
+        const d = new Decal(x, y, kind)
+        if (world.decals.length < DECALS_MAX) {
+            world.decals.push(d)
+        } else {
+            world.decals[world.decalNext] = d
+        }
+        world.decalNext = (world.decalNext + 1) % DECALS_MAX
     }
 
     // Moves along each axis separately so a diagonal push slides along a wall instead of sticking.
@@ -548,14 +633,15 @@ namespace corridor {
         enemy.hp -= damage
         enemy.hurt = IMP_HURT_MS
         enemy.awake = true
+        addDecal(world, enemy.x + world.rng.next(301) - 150, enemy.y + world.rng.next(301) - 150, DECAL_BLOOD)
         if (enemy.hp > 0) {
-            emit(world, "hit")
+            emitAt(world, "hit", enemy.x, enemy.y)
             return
         }
         enemy.dead = true
         world.kills += 1
         world.score += ENEMY_SCORE[enemy.kind]
-        emit(world, "kill")
+        emitAt(world, "kill", enemy.x, enemy.y)
         if (enemy.kind == ENEMY_BOSS) {
             world.exitLocked = false
             emit(world, "unlock")
@@ -623,6 +709,7 @@ namespace corridor {
 
     export function update(world: World, input: Input, dt: number): void {
         world.events = []
+        world.eventDist = []
         if (world.won || world.lost) return
         if (dt > 100) dt = 100
         if (dt < 0) dt = 0
@@ -664,7 +751,8 @@ namespace corridor {
             else fire(world)
         }
         for (const enemy of world.enemies) {
-            if (!enemy.dead) thinkEnemy(world, enemy, dt)
+            if (enemy.dead) enemy.deadMs += dt
+            else thinkEnemy(world, enemy, dt)
             if (world.lost) return
         }
         updateShots(world, dt)
@@ -673,6 +761,7 @@ namespace corridor {
     }
 
     export const MAP_TAP_MS = 300
+    export const PAUSE_HOLD_MS = 600
     export const DIR_UP = 1
     export const DIR_DOWN = 2
     export const DIR_LEFT = 4
@@ -694,6 +783,8 @@ namespace corridor {
         bPending: boolean
         bUp: number
         bDouble: boolean
+        longB: boolean
+        bHeld: boolean
         dirsWas: number
         tapDirs: number
         constructor() {
@@ -710,11 +801,14 @@ namespace corridor {
             this.bPending = false
             this.bUp = 0
             this.bDouble = false
+            this.longB = false
+            this.bHeld = false
         }
     }
 
     // Buttons -> Input. Holding B turns left/right into strafe. A quick B tap sets tapB (map) only
     // MAP_TAP_MS after release, so a second tap inside that window can become tapB2 (weapon swap).
+    // Holding B for PAUSE_HOLD_MS without arrows sets longB (pause) once.
     // A held over a screen change (aLatch) does not fire until released.
     export function readPad(pad: Pad, input: Input, now: number, up: boolean, down: boolean,
         left: boolean, right: boolean, a: boolean, b: boolean): void {
@@ -725,7 +819,9 @@ namespace corridor {
         const lr = (right ? 1 : 0) - (left ? 1 : 0)
         pad.tapB = false
         pad.tapB2 = false
+        pad.longB = false
         if (b && !pad.bWas) {
+            pad.bHeld = false
             pad.bDouble = pad.bPending && now - pad.bUp < MAP_TAP_MS
             pad.bPending = false
             pad.bStart = now
@@ -735,6 +831,10 @@ namespace corridor {
             input.strafe = lr
             input.turn = 0
             if (lr != 0) pad.bStrafed = true
+            if (!pad.bStrafed && !pad.bHeld && now - pad.bStart >= PAUSE_HOLD_MS) {
+                pad.bHeld = true
+                pad.longB = true
+            }
         } else {
             input.strafe = 0
             input.turn = lr

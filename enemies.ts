@@ -52,7 +52,7 @@ namespace corridor {
     }
 
     export function hurtPlayer(world: World, damage: number): void {
-        world.health -= damage
+        world.health -= Math.max(1, Math.idiv(damage * DIFF_DAMAGE[world.difficulty], 100))
         emit(world, "hurt")
         if (world.health <= 0) {
             world.health = 0
@@ -132,7 +132,7 @@ namespace corridor {
                 launch(world, enemy, d, BOSS_SPREAD)
                 launch(world, enemy, d, -BOSS_SPREAD)
             }
-            emit(world, "fireball")
+            emitAt(world, "fireball", enemy.x, enemy.y)
         }
         if (enemy.hurt > 0) return
         if (d > KEEP_FAR) chase(enemy, world.x, world.y, dt, world)
@@ -146,16 +146,23 @@ namespace corridor {
         const d = distance(enemy.x, enemy.y, world.x, world.y)
         enemy.sees = d < IMP_SIGHT && canSee(world, enemy.x, enemy.y, world.x, world.y)
         if (!enemy.sees) {
-            if (enemy.hunting && enemy.hurt <= 0) chase(enemy, enemy.lastX, enemy.lastY, dt, world)
+            if (!enemy.hunting) return
+            enemy.growl -= dt
+            if (enemy.growl <= 0) {
+                enemy.growl = GROWL_MIN_MS + world.rng.next(GROWL_SPREAD_MS + 1)
+                emitAt(world, "growl", enemy.x, enemy.y)
+            }
+            if (enemy.hurt <= 0) chase(enemy, enemy.lastX, enemy.lastY, dt, world)
             return
         }
+        enemy.growl = GROWL_MIN_MS + world.rng.next(GROWL_SPREAD_MS + 1)
         enemy.hunting = true
         enemy.lastX = world.x
         enemy.lastY = world.y
         if (!enemy.awake) {
             enemy.awake = true
             if (isRanged(enemy.kind)) enemy.cool = SHOT_AIM_MS
-            emit(world, "alert")
+            emitAt(world, "alert", enemy.x, enemy.y)
         }
         if (isRanged(enemy.kind)) {
             ranged(world, enemy, d, dt)
@@ -174,7 +181,10 @@ namespace corridor {
             s.y += Math.idiv(s.vy * dt, 1000)
             if (solidAt(world, s.x, s.y)) {
                 world.shots.splice(i, 1)
-                emit(world, "splash")
+                const bx = s.x - Math.idiv(s.vx * 120, SHOT_SPEED)
+                const by = s.y - Math.idiv(s.vy * 120, SHOT_SPEED)
+                addDecal(world, bx, by, DECAL_SCORCH)
+                emitAt(world, "splash", bx, by)
             } else if (Math.abs(s.x - world.x) < reach && Math.abs(s.y - world.y) < reach) {
                 world.shots.splice(i, 1)
                 hurtPlayer(world, SHOT_DAMAGE)

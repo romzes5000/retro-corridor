@@ -22,6 +22,9 @@ namespace corridorRender {
     const IMP_ATTACK = 2
     const IMP_DEAD = 3
     const IMP_HURT = 4
+    const IMP_DIE_A = 5
+    const IMP_DIE_B = 6
+    const IMP_DIE_C = 7
 
     export class View {
         mode: number
@@ -44,7 +47,9 @@ namespace corridorRender {
         records: string[]
         meltOn: boolean
         melt: number[]
+        pause: corridor.Pause
         constructor() {
+            this.pause = null
             this.menu = new corridor.Menu()
             this.session = null
             this.records = []
@@ -83,6 +88,7 @@ namespace corridorRender {
     let meltImg: Image = null
     let enemyFrames: Image[][][] = []
     let fireball: Image[] = []
+    let decalImages: Image[][] = []
     let shotgun: Image = null
     let itemImages: Image[][] = []
     let faces: Image[] = []
@@ -167,6 +173,9 @@ namespace corridorRender {
             shades(decode(recolor(corridorArt.IMP_ATTACK, from, to)), 3),
             shades(decode(recolor(corridorArt.IMP_DEAD, from, to)), 3),
             [white, white, white],
+            shades(decode(recolor(corridorArt.IMP_DIE_A, from, to)), 3),
+            shades(decode(recolor(corridorArt.IMP_DIE_B, from, to)), 3),
+            shades(decode(recolor(corridorArt.IMP_DIE_C, from, to)), 3),
         ]
     }
 
@@ -217,6 +226,7 @@ namespace corridorRender {
         enemyFrames = []
         for (const pair of corridorArt.ENEMY_RECOLOR) enemyFrames.push(enemySet(pair[0], pair[1]))
         fireball = shades(decode(corridorArt.FIREBALL), 2)
+        decalImages = [shades(decode(corridorArt.BLOOD), 3), shades(decode(corridorArt.SCORCH), 3)]
         shotgun = decode(corridorArt.SHOTGUN)
         itemImages = [
             shades(decode(corridorArt.MEDKIT), 3),
@@ -236,7 +246,7 @@ namespace corridorRender {
         backdrop = buildBackdrop()
         hud = image.create(W, 20)
         for (let i = 0; i < W; i++) zbuf.push(0)
-        for (let i = 0; i < 64; i++) {
+        for (let i = 0; i < 96; i++) {
             order.push(0)
             depths.push(0)
         }
@@ -301,7 +311,13 @@ namespace corridorRender {
     }
 
     function impFrame(enemy: corridor.Enemy): number {
-        if (enemy.dead) return IMP_DEAD
+        if (enemy.dead) {
+            const f = Math.idiv(enemy.deadMs, corridor.DIE_FRAME_MS)
+            if (f == 0) return IMP_DIE_A
+            if (f == 1) return IMP_DIE_B
+            if (f == 2) return IMP_DIE_C
+            return IMP_DEAD
+        }
         if (enemy.hurt > 0) return IMP_HURT
         if (enemy.attack > 0) return IMP_ATTACK
         return ((enemy.walk >> 9) & 1) == 1 ? IMP_WALK_B : IMP_WALK_A
@@ -334,6 +350,15 @@ namespace corridorRender {
             depths[n] = proj.depth
             n++
         }
+        // Decals go last so a full order buffer drops floor stains, never enemies or items.
+        for (let j = 0; j < world.decals.length && n < order.length; j++) {
+            const decal = world.decals[j]
+            corridor.project(world, decal.x, decal.y, proj)
+            if (!proj.visible) continue
+            order[n] = 3000 + j
+            depths[n] = proj.depth
+            n++
+        }
         for (let i = 1; i < n; i++) {
             const o = order[i]
             const d = depths[i]
@@ -348,7 +373,12 @@ namespace corridorRender {
         }
         for (let i = 0; i < n; i++) {
             const id = order[i]
-            if (id >= 2000) {
+            if (id >= 3000) {
+                const decal = world.decals[id - 3000]
+                corridor.project(world, decal.x, decal.y, proj)
+                const s = Math.min(2, proj.depth >> 12)
+                drawSprite(target, decalImages[decal.kind][s], proj.depth, proj.screenX, proj.size, 14, ox, horizon)
+            } else if (id >= 2000) {
                 const shot = world.shots[id - 2000]
                 corridor.project(world, shot.x, shot.y, proj)
                 drawFireball(target, proj.depth, proj.screenX, proj.size, ox, horizon)
@@ -455,12 +485,6 @@ namespace corridorRender {
         target.fillRect(14, y + 2, W - 28, h - 4, 15)
     }
 
-    function clock(ms: number): string {
-        const sec = Math.idiv(ms, 1000)
-        const rest = sec % 60
-        return Math.idiv(sec, 60) + ":" + (rest < 10 ? "0" : "") + rest
-    }
-
     function drawTitle(target: Image, view: View): void {
         const menu = view.menu
         panel(target, 6, 90, 5)
@@ -489,7 +513,7 @@ namespace corridorRender {
         centered(target, "KILLS " + corridor.pct(world.kills, world.total) + "%", 40, 1, 1)
         centered(target, "ITEMS " + corridor.pct(world.itemsTaken, world.itemsTotal) + "%", 48, 1, 1)
         centered(target, "SECRETS " + corridor.pct(world.found, world.secrets) + "%", 56, 1, 1)
-        centered(target, "TIME " + clock(world.time), 64, 1, 1)
+        centered(target, "TIME " + corridor.clock(world.time), 64, 1, 1)
         centered(target, "A NEXT", 80, 6, 1)
     }
 
@@ -499,12 +523,27 @@ namespace corridorRender {
         const s = view.session
         if (s) {
             centered(target, "KILLS " + s.kills + "/" + s.total, 40, 1, 1)
-            centered(target, "TIME " + clock(s.time), 50, 1, 1)
+            centered(target, "TIME " + corridor.clock(s.time), 50, 1, 1)
         }
         centered(target, "A TITLE", 80, 6, 1)
     }
 
+    function drawPause(target: Image, pause: corridor.Pause): void {
+        panel(target, 14, 72, 6)
+        centered(target, "PAUSED", 20, 4, 2)
+        const labels = ["RESUME", "MUSIC " + (pause.music ? "ON" : "OFF"), "- " + corridor.DIFF_NAMES[pause.difficulty] + " +", "QUIT"]
+        for (let i = 0; i < labels.length; i++) {
+            const sel = i == pause.index
+            centered(target, sel ? "> " + labels[i] : labels[i], 38 + i * 10, sel ? 4 : 1, 1)
+        }
+        centered(target, "B BACK", 78, 6, 1)
+    }
+
     function drawOverlay(target: Image, world: corridor.World, view: View): void {
+        if (view.pause) {
+            drawPause(target, view.pause)
+            return
+        }
         if (view.mode == MODE_TITLE) {
             drawTitle(target, view)
             return
@@ -521,7 +560,7 @@ namespace corridorRender {
         panel(target, 18, 64, 2)
         centered(target, "YOU DIED", 26, 2, 2)
         centered(target, "KILLS " + world.kills + "/" + world.total, 44, 1, 1)
-        centered(target, "TIME " + clock(world.time), 52, 1, 1)
+        centered(target, "TIME " + corridor.clock(world.time), 52, 1, 1)
         centered(target, "A RETRY", 70, 6, 1)
     }
 
