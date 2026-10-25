@@ -71,19 +71,41 @@ npm run play -- --last     # прошлый запуск без вопросов
 npm run play -- --yes      # по умолчанию: приставка, --film --watch --lessons
 npm run play -- --dry-run  # только показать команду и откуда взят ключ
 npm run play -- --yes --sim ARENA --runs 3   # остальные флаги уходят в npm run ai
+npm run browser            # та же игра в браузере, без приставки
 ```
 
-Меню спрашивает режим (приставка по USB, симулятор с Jev, симулятор с fake Jev без ключа), для
-симулятора уровень, попытки и сложность, затем страницу просмотра и открывать ли браузер, публичную
-ссылку, запись фильма, уроки (вкл, с нуля, выкл) и память карты. Ответы хранятся в `.play-last.json`
-(не в git). Перед игрой на приставке лаунчер останавливает уже запущенный на ней мост (SIGINT),
-проверяет приставку через `--check` и подсказывает, если она не подключена или не выбран `PLAYER AI`.
-Страница: `http://localhost:8787`, карта: `http://localhost:8787/map`, браузер открывается сам
-(`--no-open` — не открывать). Пока мост работает, рядом поднимается быстрый туннель Cloudflare и в
-терминале появляется случайный `https://….trycloudflare.com` (и `/map`): страница, карта и поток
-доступны из интернета, пока идёт этот запуск. `--no-public` туннель не поднимает; без `cloudflared`
-лаунчер пишет `brew install cloudflared` и оставляет локальную страницу. Ctrl+C останавливает мост
-и туннель.
+Меню спрашивает режим (приставка по USB, симулятор с Jev, симулятор с fake Jev без ключа, либо
+браузер). В браузере крутится тот же код, что на приставке: кадр 160×120 и карта уровня рядом,
+клавиатура вместо кнопок (`стрелки` или `WASD`, `пробел` — A, `J` или `Shift` — B). В паузе
+`GIVE TO AI` отдаёт уровень мосту на этом же компьютере (ключ OpenRouter — Jev, без ключа —
+правила), `TAKE OVER` возвращает клавиатуру. `npm run browser` открывает `http://localhost:8787`:
+слева кадр, справа карта игры. Публичная ссылка поднимается так же, как у просмотра.
+Для симулятора меню спрашивает уровень, попытки и сложность, затем страницу просмотра, открывать ли
+браузер, публичную ссылку, запись фильма, уроки (вкл, с нуля, выкл) и память карты. Ответы хранятся
+в `.play-last.json` (не в git). Перед игрой на приставке лаунчер останавливает уже запущенный на ней
+мост (SIGINT), проверяет приставку через `--check` и подсказывает, если она не подключена или не
+выбран `PLAYER AI`. Страница: `http://localhost:8787`, карта: `http://localhost:8787/map`, браузер
+открывается сам (`--no-open` — не открывать). Пока мост работает, рядом поднимается быстрый туннель
+Cloudflare и в терминале появляется случайный `https://….trycloudflare.com` (и `/map`): страница,
+карта и поток доступны из интернета, пока идёт этот запуск. `--no-public` туннель не поднимает; без
+`cloudflared` лаунчер пишет `brew install cloudflared` и оставляет локальную страницу. Один запуск
+проходит выбранные уровни и завершается. Ctrl+C останавливает мост и туннель.
+
+Публичная трансляция симулятора с туманом войны с этого мака идёт не через Cloudflare (с этой сети
+туннель не встаёт), а на уже выпущенный адрес
+`https://corridor-watch-g127.netbird-proxy.oxem.dev` (карта — `/map`). Он смотрит на порт 8798.
+Запуск из каталога репозитория:
+
+```bash
+npm run play -- --yes --sim ALL --watch-port 8798 --watch-host 0.0.0.0 --no-public --no-open
+```
+
+Ключ OpenRouter лаунчер берёт сам. Пока вкладка открыта, кампания идёт. Закрытая страница не
+останавливает процесс: симулятор пишет `жду зрителя` или `пауза: браузер закрыт` и стоит, пока
+страницу не откроют снова. Перезагрузка короче 2 с паузой не считается. Стоп — Ctrl+C в том
+терминале. Если порт остался занят: `kill $(lsof -nP -t -iTCP:8798 -sTCP:LISTEN)`. С мака свой
+NetBird-адрес сам на себя не доходит; без маршрута `100.72.38.165` через `127.0.0.1` публичная
+страница не откроется. Маршрут пропадает после перезагрузки.
 
 Ключ OpenRouter берётся по порядку: `OPENROUTER_KEY` в окружении, файл из `RC_ENV_FILE`, `.env.local`
 в репо (не в git), macOS Keychain, сервис `retro-corridor-openrouter` (другой — `RC_KEYCHAIN_SERVICE`).
@@ -171,6 +193,14 @@ stay dark, with their doors and items. `/map` shows the map alone.
 `NO SIGNAL` means no snapshot for 1.5 s. `--watch-port` changes the port;
 `--watch-host 0.0.0.0` opens it to the local network, for a phone. Works with `--sim` too.
 
+Each frame is deflate-raw palette indices (about 2 KB instead of 25 KB), and the page keeps only the
+latest one if decoding falls behind. A simulated run with `--watch` does not advance while nobody is
+connected: it waits for the first viewer, and after the page is closed it pauses once the gap is
+longer than 2 s. A reload inside that window does not pause. `--fast` benches do not pause. The page
+and the browser game play the same events through WebAudio (shot, shotgun, hit, death, a door creak
+when a door starts to open or close, keys, pickups). The browser blocks sound until the first click
+or key. The console beeper is unchanged.
+
 ### Lessons after a death
 
 Jev answers one situation at a time and remembers nothing, so after a death the bridge writes down
@@ -235,7 +265,8 @@ of play. The GIF above is one of those runs replayed from `demo/ai-hangar.json` 
 | `tools/` | Sprite sheet importer |
 | `ai.ts` | AI link on the console: snapshots, mailbox, route follower, reflexes, status line |
 | `main.ts` | Device glue: loop, sound, music, settings, AI mailbox |
-| `bridge/` | AI bridge on the computer: HF2 transport, shadow world, route, memory of what was seen, facts, Jev, simulator, eval situations |
+| `bridge/` | AI bridge on the computer: HF2 transport, shadow world, route, memory of what was seen, facts, Jev, simulator, live view, WebAudio voices, eval situations |
+| `browser/` | The same game in a browser: keyboard, map beside the picture, optional Jev |
 | `demo/` | Pilot bot, GIF recorder, legacy renderer for the before/after clip |
 
 ## Art

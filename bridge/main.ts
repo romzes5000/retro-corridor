@@ -25,7 +25,7 @@ import { FilmRecorder } from "./film.ts"
 import { Hf2Transport } from "./hf2.ts"
 import { jevModel, makeJev, type JevFn } from "./jev.ts"
 import { learnedLine, lessonLine, LessonStore, lessonsFile, lessonsOn, makeReflect, type LessonFlags, type ReflectFn } from "./lessons.ts"
-import { LiveBoard, LivePlayer, startWatch, WATCH_PORT, type Watch } from "./live.ts"
+import { holdForViewer, LiveBoard, LivePlayer, startWatch, VIEWER_GRACE_MS, WATCH_PORT, type Watch } from "./live.ts"
 import { addStats, Bridge, emptyStats, percentile, type BridgeOptions, type LogRecord, type Stats } from "./loop.ts"
 import { isBox } from "./mailbox.ts"
 import { LiveMap } from "./map.ts"
@@ -52,6 +52,8 @@ interface Recording {
     record(rec: LogRecord): void
     // The bridge whose counters and route the live page shows; a sim bench has a new one per run.
     attach(bridge: Bridge): void
+    // Open live-view streams. Absent when nothing is being watched: the sim then never pauses.
+    viewers?: () => number
     close(): Promise<void>
 }
 
@@ -99,6 +101,7 @@ async function openRecording(filming: boolean, watch: WatchFlags | null, store: 
             if (board) board.stats = () => bridge.stats
             if (map) map.route = () => bridge.route
         },
+        ...(server ? { viewers: () => server.clients() } : {}),
         close: async () => server?.close(),
     }
 }
@@ -265,7 +268,20 @@ async function simLevel(api: ReturnType<typeof loadLogic>, level: SimLevel, jev:
             }
         } else {
             let last = Date.now()
+            const seen = { value: false }
+            let told = false
+            const viewers = film?.viewers
             while (!over() && sim.clock < limit) {
+                if (viewers) {
+                    const paused = await holdForViewer(viewers, seen, VIEWER_GRACE_MS, undefined, (wasWatching) => {
+                        if (!told) console.log(wasWatching ? "пауза: браузер закрыт" : "жду зрителя")
+                        told = true
+                    })
+                    if (paused) {
+                        last = Date.now()
+                        told = false
+                    }
+                }
                 await new Promise((resolve) => setTimeout(resolve, SIM_DT))
                 const t = Date.now()
                 for (let left = t - last; left >= SIM_DT && !over(); left -= SIM_DT) {

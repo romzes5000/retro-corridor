@@ -488,14 +488,14 @@ test("сценарий: посреди HANGAR игрок перехватыва�
     assert.equal(api.noteRun(new api.Records(), sim.session), false, "уровень с ИИ рекорд не ставит")
 })
 
-test("сценарий: Jev отвечает дольше 1200 мс — игра отбрасывает команды как stale и не идёт вслепую", async () => {
+test("сценарий: Jev отвечает дольше 1200 мс — команда строится по свежему снимку, игрок идёт", async () => {
     const sim = new SimConsole(0, api.DIFF_NORMAL)
     const x0 = sim.world.x
     const y0 = sim.world.y
-    const bridge = await drive(sim, async () => ({ action: "advance", confidence: 1, danger: null, cost: 0, latencyMs: 0, error: "" }), 1400, 8000)
-    assert.ok(bridge.stats.stale >= 3, `stale ${bridge.stats.stale}`)
-    assert.deepEqual([sim.world.x, sim.world.y], [x0, y0])
-    assert.equal(api.aiStatus(sim.link), api.AI_NO_LINK, "без принятых команд — NO LINK на экране")
+    const bridge = await drive(sim, async () => ({ action: "advance", confidence: 1, danger: null, cost: 0, latencyMs: 0, error: "" }), 1400, 6000)
+    assert.equal(bridge.stats.stale, 0, `stale ${bridge.stats.stale}`)
+    assert.ok(sim.world.x !== x0 || sim.world.y !== y0, "игрок остался на месте")
+    assert.notEqual(api.aiStatus(sim.link), api.AI_NO_LINK)
 })
 
 test("сценарий: Jev недоступен — мост шлёт wait, игрок стоит, мост не падает", async () => {

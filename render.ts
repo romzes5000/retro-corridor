@@ -516,6 +516,11 @@ namespace corridorRender {
         target.fillRect(px - 1, py - 1, 3, 3, 1)
     }
 
+    // The in-game map, on its own image: the browser page shows it beside the view.
+    export function paintMap(target: Image, world: corridor.World): void {
+        drawMap(target, world)
+    }
+
     function faceFor(world: corridor.World, view: View): number {
         if (world.lost) return FACE_DEAD
         if (view.faceTime > 0) return view.face

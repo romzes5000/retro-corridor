@@ -259,6 +259,10 @@ export class SegmentPlayer {
             const kind = world.items[i].kind
             events.push(kind === api.ITEM_SHOTGUN ? "weapon" : kind === api.ITEM_HEALTH || kind === api.ITEM_AMMO ? "pickup" : "unlock")
         })
+        next.doors.forEach((state, i) => {
+            if (state === prev.doors[i]) return
+            if (state === api.DOOR_OPENING || state === api.DOOR_CLOSING) events.push("door")
+        })
     }
 
     // World at fraction `f` of the way from snapshot a to b (b null: hold a).

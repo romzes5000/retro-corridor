@@ -134,6 +134,24 @@ test("проигрыватель: выстрел, урон, попадание, 
     assert.deepEqual(frameAt(frames, 40).events, [])
 })
 
+test("проигрыватель: дверь скрипит при начале открытия и закрытия, и молчит, пока просто стоит открытой", () => {
+    const { world, link } = hangar()
+    const door = world.doors[0]
+    assert.equal(door.state, api.DOOR_CLOSED)
+    const s0 = snap(link, world, 0)
+    door.state = api.DOOR_OPENING
+    const s1 = snap(link, world, 250)
+    door.state = api.DOOR_OPEN
+    const s2 = snap(link, world, 500)
+    door.state = api.DOOR_CLOSING
+    const s3 = snap(link, world, 750)
+    const s4 = snap(link, world, 1000)
+    const frames = collect(new FilmPlayer(api, [s0, s1, s2, s3, s4].map((s) => ({ k: "s", snap: s }))))
+    assert.deepEqual(frameAt(frames, 280).events, ["door"])
+    assert.deepEqual(frameAt(frames, 520).events, [])
+    assert.deepEqual(frameAt(frames, 760).events, ["door"])
+})
+
 test("проигрыватель: строка JEV из последнего решения, красная при danger от 0.6; конец уровня — табличка и хвост", () => {
     const { world, link } = hangar()
     const s0 = snap(link, world, 0)

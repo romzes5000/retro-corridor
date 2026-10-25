@@ -11,6 +11,7 @@ import fs from "node:fs"
 import path from "node:path"
 import readline from "node:readline"
 import { fileURLToPath } from "node:url"
+import { BROWSER_PORT, startBrowser } from "../browser/serve.ts"
 import {
     askYes,
     bridgeArgs,
@@ -44,6 +45,7 @@ const USAGE = `npm run play [-- --last | --yes] [--dry-run] [--no-open] [--no-pu
   без флагов   меню; Enter запускает как в прошлый раз
   --last       прошлый запуск без вопросов
   --yes        по умолчанию: приставка, --film --watch --lessons
+  в меню «браузер» — та же игра в браузере, без приставки и без Jev
   --dry-run    показать команду и откуда ключ, ничего не запускать
   --no-public  без случайной ссылки в интернет на этот запуск`
 
@@ -197,6 +199,30 @@ function startBridge(argv: string[], key: string | null, open: boolean, expose: 
     return child
 }
 
+// The page runs the game itself. The tunnel, when asked, points at this server.
+async function runBrowser(open: boolean, expose: boolean): Promise<void> {
+    const port = Number(process.env.RC_BROWSER_PORT || BROWSER_PORT)
+    let srv: Awaited<ReturnType<typeof startBrowser>>
+    try {
+        srv = await startBrowser(port)
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        console.error(code === "EADDRINUSE" ? `порт ${port} занят` : err instanceof Error ? err.message : err)
+        process.exit(1)
+    }
+    console.log(`watch ${srv.url}`)
+    console.log(`\n  играть: ${srv.url}\n  стоп:   Ctrl+C\n`)
+    if (open) openBrowser(srv.url)
+    const tunnel = expose ? startTunnel(srv.url) : null
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+        process.on(signal, () => {
+            stopTunnel(tunnel)
+            void srv.close()
+            process.exit(signal === "SIGINT" || signal === "SIGTERM" ? 130 : 1)
+        })
+    }
+}
+
 async function main(): Promise<void> {
     const args = parsePlayArgs(process.argv.slice(2))
     if (args.help) {
@@ -209,6 +235,18 @@ async function main(): Promise<void> {
     const io = menu?.io ?? null
     try {
         const choices = args.yes ? DEFAULTS : args.last || !io ? (last ?? DEFAULTS) : await runMenu(io, last ?? DEFAULTS, last === null)
+        if (choices.mode === "browser") {
+            console.log("команда: npm run browser")
+            if (args.dryRun) return
+            const found = findKey({ env: process.env, repoDir: REPO, readFile, keychain })
+            if (found) {
+                process.env.OPENROUTER_KEY = found.key
+                console.log(`ключ OpenRouter: ${found.source}`)
+            } else console.log("ИИ в браузере: правила, без ключа OpenRouter")
+            saveLast(stateFile, choices)
+            await runBrowser(args.open && choices.open, args.public && choices.public)
+            return
+        }
         const argv = [...bridgeArgs(choices), ...args.passthrough]
         const p = plan(argv)
         const found = p.needsKey ? findKey({ env: process.env, repoDir: REPO, readFile, keychain }) : null

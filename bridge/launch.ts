@@ -5,7 +5,7 @@
 import fs from "node:fs"
 import path from "node:path"
 
-export type Mode = "console" | "sim" | "sim-fake"
+export type Mode = "console" | "sim" | "sim-fake" | "browser"
 export type Difficulty = "easy" | "normal" | "hard"
 export type LessonsChoice = "on" | "reset" | "off"
 
@@ -45,6 +45,7 @@ export const MODES: Array<[Mode, string]> = [
     ["console", "приставка по USB, Jev"],
     ["sim", "симулятор, Jev"],
     ["sim-fake", "симулятор, fake Jev (без ключа)"],
+    ["browser", "браузер, с клавиатуры (без приставки)"],
 ]
 export const LEVELS = ["HANGAR", "WAREHOUSE", "ARENA", "ALL", "D1-D5"]
 const DIFFICULTIES: Difficulty[] = ["easy", "normal", "hard"]
@@ -58,6 +59,7 @@ export const KEYCHAIN_SERVICE = "retro-corridor-openrouter"
 export const STATE_FILE = ".play-last.json"
 
 export function bridgeArgs(c: Choices): string[] {
+    if (c.mode === "browser") return []
     const args: string[] = []
     if (c.mode !== "console") {
         args.push("--sim", c.level)
@@ -77,6 +79,12 @@ export function bridgeArgs(c: Choices): string[] {
 }
 
 export function describe(c: Choices): string {
+    if (c.mode === "browser") {
+        const parts = ["браузер, с клавиатуры"]
+        parts.push(c.open ? "страница откроется сама" : "без открытия страницы")
+        if (c.public) parts.push("публичная ссылка")
+        return parts.join("; ")
+    }
     const parts = [MODES.find(([m]) => m === c.mode)![1]]
     if (c.mode !== "console") parts.push(`${c.level}, ${c.difficulty}${c.attempts > 1 ? `, до ${c.attempts} попыток` : ""}${c.mode === "sim-fake" && c.fast ? ", --fast" : ""}`)
     parts.push(c.watch ? (c.open ? "страница + браузер" : "страница") : "без страницы")
@@ -406,6 +414,11 @@ export async function runMenu(io: MenuIO, start: Choices, first: boolean): Promi
     if (again) return start
     const c: Choices = { ...start }
     c.mode = await pickOne(io, "Режим", MODES, c.mode)
+    if (c.mode === "browser") {
+        c.open = await askYes(io, "Открыть страницу сам", c.open)
+        c.public = await askYes(io, "Публичная ссылка в интернете (trycloudflare)", c.public)
+        return c
+    }
     if (c.mode !== "console") {
         c.level = await askLevel(io, c.level)
         c.attempts = await askCount(io, "Попыток на уровень (после смерти заново, до победы)", c.attempts)

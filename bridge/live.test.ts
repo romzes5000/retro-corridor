@@ -7,7 +7,7 @@ import { loadGame, type World } from "../load-logic.ts"
 import { fakeJev } from "./fake-jev.ts"
 import { FilmRecorder, GAP_MS, TAIL_MS, type FilmRecord } from "./film.ts"
 import { LessonStore, type Draft } from "./lessons.ts"
-import { encodeFrame, LIVE_DELAY_MS, LiveBoard, LivePlayer, NO_SIGNAL, startWatch } from "./live.ts"
+import { decodeFrame, encodeFrame, holdForViewer, LIVE_DELAY_MS, LiveBoard, LivePlayer, NO_SIGNAL, startWatch } from "./live.ts"
 import { Bridge, emptyStats, type LogRecord } from "./loop.ts"
 import { LiveMap } from "./map.ts"
 import { Parser, type Snapshot } from "./protocol.ts"
@@ -110,7 +110,9 @@ test("живой кадр: решения Jev уходят подписчику;
     assert.deepEqual(seen, ["ADVANCE"])
     const frame = live.frame()
     assert.ok(frame)
-    const bytes = Buffer.from(encodeFrame(frame.img), "base64")
+    const encoded = encodeFrame(frame.img)
+    assert.ok(encoded.length < 160 * 120, "кадр сжат, иначе публичный просмотр не успевает")
+    const bytes = decodeFrame(encoded)
     assert.equal(bytes.length, 160 * 120)
     assert.deepEqual([...bytes.subarray(0, 64)], [...frame.img.pixels.subarray(0, 64)])
 })
@@ -209,6 +211,66 @@ async function listen(url: string): Promise<{ events: Array<{ event: string; dat
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+test("живой кадр: выстрел звучит один раз, когда патроны убыли", () => {
+    let wall = 0
+    const live = new LivePlayer(game, () => wall)
+    const { world, link } = hangar()
+    assert.ok(world.ammo > 0)
+    live.push(snap(link, world, 0))
+    wall = 200
+    world.ammo -= 1
+    live.push(snap(link, world, 200))
+    wall = 200 + LIVE_DELAY_MS
+    const shot = live.frame()
+    assert.ok(shot?.events.includes("shoot"))
+    assert.deepEqual(live.frame()?.events, [])
+})
+
+test("поток: открытие двери уходит событием sfx door", async () => {
+    let wall = 0
+    const live = new LivePlayer(game, () => wall)
+    const { world, link } = hangar()
+    live.push(snap(link, world, 0))
+    wall = 200
+    world.doors[0].state = api.DOOR_OPENING
+    live.push(snap(link, world, 200))
+    wall = 200 + LIVE_DELAY_MS
+    const watch = await startWatch(game, live, { port: 0, frameMs: 5 })
+    try {
+        const client = await listen(`${watch.url}/stream`)
+        await sleep(40)
+        client.close()
+        const sfx = client.events.filter((e) => e.event === "sfx").map((e) => JSON.parse(e.data) as string[])
+        assert.ok(sfx.some((names) => names.includes("door")))
+    } finally {
+        await watch.close()
+    }
+})
+
+test("поток: выстрел уходит отдельным событием sfx, страница умеет его сыграть", async () => {
+    let wall = 0
+    const live = new LivePlayer(game, () => wall)
+    const { world, link } = hangar()
+    live.push(snap(link, world, 0))
+    wall = 200
+    world.ammo -= 1
+    live.push(snap(link, world, 200))
+    wall = 200 + LIVE_DELAY_MS
+    const watch = await startWatch(game, live, { port: 0, frameMs: 5 })
+    try {
+        const page = await get(`${watch.url}/`)
+        assert.match(page.body, /corridorSfx/)
+        assert.match(page.body, /addEventListener\("sfx"/)
+        const client = await listen(`${watch.url}/stream`)
+        await sleep(40)
+        client.close()
+        const sfx = client.events.filter((e) => e.event === "sfx").map((e) => JSON.parse(e.data) as string[])
+        assert.ok(sfx.some((names) => names.includes("shoot")))
+    } finally {
+        await watch.close()
+    }
+})
+
 test("поток: новый клиент получает текущий кадр, а не тот, что видел прошлый", async () => {
     let wall = 0
     const live = new LivePlayer(game, () => wall)
@@ -291,7 +353,7 @@ test("сценарий: страница и поток — палитра, ка�
         assert.match(page.body, /addEventListener\("note"/)
         const frames = events.filter((e) => e.event === "frame")
         assert.ok(frames.length >= 10, `кадров ${frames.length}`)
-        assert.ok(frames.every((f) => Buffer.from(f.data, "base64").length === 160 * 120))
+        assert.ok(frames.every((f) => f.data.length < 160 * 120 && decodeFrame(f.data).length === 160 * 120))
         const jev = events.filter((e) => e.event === "jev").map((e) => JSON.parse(e.data))
         assert.ok(jev.length > 0 && jev.every((j) => typeof j.label === "string" && typeof j.conf === "number"))
 
@@ -380,6 +442,52 @@ test("поток: первый оверлей нового клиента — т
         const first = client.events.find((e) => e.event === "overlay")
         assert.ok(first)
         assert.equal(JSON.parse(first.data).player.x, Math.round(((x0 + 1000) / api.FP) * 100) / 100)
+    } finally {
+        await watch.close()
+    }
+})
+
+test("зрители: без открытой страницы игра ждёт, с открытой не ждёт", async () => {
+    let n = 0
+    const seen = { value: false }
+    let sleeps = 0
+    const held = holdForViewer(() => n, seen, 5000, async () => {
+        sleeps++
+        if (sleeps === 2) n = 1
+    })
+    assert.equal(await held, true)
+    assert.equal(seen.value, true)
+    assert.equal(sleeps, 2)
+    let extra = 0
+    assert.equal(await holdForViewer(() => n, seen, 5000, async () => { extra++ }), false)
+    assert.equal(extra, 0)
+})
+
+test("зрители: обрыв короче льготы не ставит игру на паузу", async () => {
+    let n = 0
+    const seen = { value: true }
+    let slept = 0
+    const held = await holdForViewer(() => n, seen, 300, async (ms) => {
+        slept += ms
+        if (slept >= 200) n = 1
+    })
+    assert.equal(held, true)
+    assert.ok(slept >= 200 && slept < 300, `ждали ${slept}`)
+})
+
+test("сценарий: страница закрыта — симулятор стоит, открыли — идёт", async () => {
+    const live = new LivePlayer(game)
+    const watch = await startWatch(game, live, { port: 0, frameMs: 60000 })
+    const seen = { value: false }
+    try {
+        let paused = false
+        const held = holdForViewer(() => watch.clients(), seen, 0, (ms) => new Promise((r) => setTimeout(r, ms)), () => { paused = true })
+        setTimeout(() => { void listen(`${watch.url}/stream`).then((c) => setTimeout(() => c.close(), 500)) }, 80)
+        const t0 = Date.now()
+        assert.equal(await held, true)
+        assert.ok(Date.now() - t0 >= 70)
+        assert.equal(paused, true)
+        assert.equal(seen.value, true)
     } finally {
         await watch.close()
     }

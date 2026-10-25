@@ -4,6 +4,7 @@
 //   npm run ai -- --watch               then open http://localhost:8787
 //   npm run ai -- --watch --watch-host 0.0.0.0   reachable from a phone on the same network
 import http from "node:http"
+import zlib from "node:zlib"
 import type { AddressInfo } from "node:net"
 import { rgbList } from "../demo/frames.ts"
 import { FakeImage } from "../fake-image.ts"
@@ -13,8 +14,11 @@ import { learnedLine, lessonWhere, type Lesson, type LessonStore } from "./lesso
 import { emptyStats, percentile, type LogRecord, type Stats } from "./loop.ts"
 import { MAP_PAGE, MAP_PANEL, MAP_SCRIPT, MAP_STYLE, OVERLAY_MS } from "./map.ts"
 import type { Snapshot } from "./protocol.ts"
+import { sfxPlayerSource } from "./sfx.ts"
 
 export const LIVE_DELAY_MS = 300
+// A reload drops the stream for a moment. Longer than this with no viewer and the sim pauses.
+export const VIEWER_GRACE_MS = 2000
 export const WATCH_PORT = 8787
 export const NO_SIGNAL = "NO SIGNAL"
 export const STATUS_MS = 1000
@@ -26,6 +30,8 @@ export interface LiveFrame {
     world: World
     img: FakeImage
     banner: string
+    // Game events crossed since the previous frame: shoot, hurt, kill, ...
+    events: string[]
 }
 
 interface Ended {
@@ -130,7 +136,7 @@ export class LivePlayer {
         this.view.aiAlert = jevAlert(j, seg)
         r.draw(this.img as never, seg.world, this.view)
         drawBanner(this.game, this.img, banner)
-        return { t, world: seg.world, img: this.img, banner }
+        return { t, world: seg.world, img: this.img, banner, events }
     }
 
     private latestJev(t: number): JevRecord | null {
@@ -277,9 +283,51 @@ export class LiveBoard {
     }
 }
 
-// Palette indices of a 160x120 frame, one byte per pixel, as base64.
+// Palette indices of a 160x120 frame, deflate-raw then base64. Raw base64 is 25 KB and the public
+// path (this machine, NetBird, the proxy) cannot carry 25 of those a second, so the viewer queues
+// up and the picture lags. A typical frame shrinks to about 2 KB.
 export function encodeFrame(img: FakeImage): string {
-    return Buffer.from(img.pixels.buffer, img.pixels.byteOffset, img.pixels.byteLength).toString("base64")
+    const raw = Buffer.from(img.pixels.buffer, img.pixels.byteOffset, img.pixels.byteLength)
+    return zlib.deflateRawSync(raw, { level: 1 }).toString("base64")
+}
+
+export function decodeFrame(data: string): Buffer {
+    return zlib.inflateRawSync(Buffer.from(data, "base64"))
+}
+
+// The sim calls this before it advances time. With no viewer yet, it waits. After someone has
+// watched, a gap shorter than graceMs (a reload) does not count. Returns true when it waited,
+// so the caller can drop the time it spent waiting instead of fast-forwarding the game.
+export async function holdForViewer(
+    viewers: () => number,
+    seen: { value: boolean },
+    graceMs: number,
+    sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    onPause?: (wasWatching: boolean) => void,
+): Promise<boolean> {
+    if (viewers() > 0) {
+        seen.value = true
+        return false
+    }
+    let waited = false
+    if (seen.value && graceMs > 0) {
+        let left = graceMs
+        while (viewers() === 0 && left > 0) {
+            const step = Math.min(100, left)
+            await sleep(step)
+            left -= step
+            waited = true
+        }
+    }
+    if (viewers() === 0) {
+        onPause?.(seen.value)
+        while (viewers() === 0) {
+            await sleep(200)
+            waited = true
+        }
+    }
+    seen.value = true
+    return waited
 }
 
 export interface Watch {
@@ -381,10 +429,14 @@ export async function startWatch(game: Game, player: LivePlayer, opts: WatchOpti
         if (clients.size === 0) return
         const frame = player.frame()
         if (!frame) return
+        if (frame.events.length) publish("sfx", frame.events)
         const data = encodeFrame(frame.img)
         if (data === last) return
         last = data
-        for (const c of clients) if (!mapOnly.has(c)) send(c, "frame", data)
+        for (const c of clients) {
+            // A slow viewer keeps the latest picture instead of a queue of old ones.
+            if (!mapOnly.has(c) && c.writableLength < 64_000) send(c, "frame", data)
+        }
     }, opts.frameMs ?? FRAME_MS)
     const status = opts.status
     const statusTimer = status ? setInterval(() => {
@@ -459,6 +511,7 @@ ${MAP_STYLE}
 </div>
 ${MAP_PANEL}
 <script>
+${sfxPlayerSource()}
 ${MAP_SCRIPT}
   const ctx = document.getElementById("screen").getContext("2d")
   const image = ctx.createImageData(160, 120)
@@ -484,16 +537,35 @@ ${MAP_SCRIPT}
   stream.onopen = () => { status.textContent = "live"; status.className = "" }
   stream.onerror = () => { status.textContent = "no link to the bridge, retrying"; status.className = "off" }
   stream.addEventListener("palette", (e) => { palette = JSON.parse(e.data) })
-  stream.addEventListener("frame", (e) => {
-    const bytes = atob(e.data)
+  let frameLatest = null
+  let frameJob = null
+  const paint = (bytes) => {
     for (let i = 0; i < bytes.length; i++) {
-      const c = palette[bytes.charCodeAt(i)] || [0, 0, 0]
+      const c = palette[bytes[i]] || [0, 0, 0]
       image.data[i * 4] = c[0]
       image.data[i * 4 + 1] = c[1]
       image.data[i * 4 + 2] = c[2]
       image.data[i * 4 + 3] = 255
     }
     ctx.putImageData(image, 0, 0)
+  }
+  stream.addEventListener("sfx", (e) => {
+    const names = JSON.parse(e.data)
+    for (let i = 0; i < names.length; i++) corridorSfx.play(names[i])
+  })
+  stream.addEventListener("frame", (e) => {
+    frameLatest = e.data
+    if (frameJob) return
+    frameJob = (async () => {
+      while (frameLatest) {
+        const data = frameLatest
+        frameLatest = null
+        const bin = Uint8Array.from(atob(data), (c) => c.charCodeAt(0))
+        const inflated = new Blob([bin]).stream().pipeThrough(new DecompressionStream("deflate-raw"))
+        paint(new Uint8Array(await new Response(inflated).arrayBuffer()))
+      }
+      frameJob = null
+    })()
   })
   stream.addEventListener("jev", (e) => {
     const j = JSON.parse(e.data)

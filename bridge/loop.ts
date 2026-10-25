@@ -418,11 +418,31 @@ export class Bridge {
         this.stats.latencies.push(answer.latencyMs)
         this.stats.cost += answer.cost
         if (attempt !== this.attempt || !this.latest || this.latest.run !== snap.run || this.latest.lvl !== snap.lvl) return
-        const { decision, note } = choose(answer)
+        const chosen = choose(answer)
+        // Jev thought about an older snapshot. The command is rebuilt on the newest one, so the
+        // game does not drop it as stale and leave the player standing until the next answer.
+        let decision = chosen.decision
+        let note = chosen.note
+        let obs = snap.n
+        let origin = from
+        const fresh = this.latest
+        if (fresh.n > snap.n && !this.lessons) {
+            const again = this.retarget(fresh, decision.action, answer.danger)
+            if (again) {
+                decision = again.decision
+                if (note.override) decision.label = lessonLabel(decision.label)
+                obs = again.snap.n
+                origin = again.from
+                if (again.forced) {
+                    note = { ...note, forced: true }
+                    this.stats.forcedHeal++
+                }
+            }
+        }
         this.seq = nextSeq(this.seq)
         const box = encodeBox({
             seq: this.seq,
-            obs: snap.n,
+            obs,
             cmd: decision.cmd,
             a: decision.a,
             b: decision.b,
@@ -433,10 +453,24 @@ export class Bridge {
             danger: answer.danger,
         })
         await this.transport.writeBox(boxWrites(box))
-        this.sent = { cmd: decision.cmd, a: decision.a, b: decision.b, route: decision.route, from }
+        this.sent = { cmd: decision.cmd, a: decision.a, b: decision.b, route: decision.route, from: origin }
         this.stats.decisions++
         this.history = [...this.history, { seq: this.seq, action: decision.action, result: "sent" }].slice(-RECENT)
-        this.log({ kind: "decision", at: this.now(), n: snap.n, lvl: snap.lvl, state, answer, decision, seq: this.seq, ...note })
+        this.log({ kind: "decision", at: this.now(), n: obs, lvl: snap.lvl, state, answer, decision, seq: this.seq, ...note })
+    }
+
+    // Same tactic, planned from the snapshot that is current when the answer arrives.
+    private retarget(snap: Snapshot, action: Action, danger: number | null): { decision: Decision; snap: Snapshot; from: Cell; forced: boolean } | null {
+        const world = this.shadow.sync(snap)
+        if (!world) return null
+        const level = `${snap.run}:${snap.lvl}:${this.attempt}`
+        this.countPickups(`${snap.run}:${snap.lvl}`, world)
+        this.memory.observe(level, this.api, world, snap.t, this.mapMemory ? `${snap.lvl}:${snap.hash}` : `${level}:${snap.hash}`)
+        const sit = situate(this.api, world, this.memory)
+        const forced = mustHeal(world, sit, action)
+        this.route = routeOf(this.api, world, sit, this.memory, `${snap.run}:${snap.lvl}:${snap.hash}`)
+        const decision = decide(this.api, world, sit, forced ? "heal" : action, danger)
+        return { decision, snap, from: sit.at, forced }
     }
 }
 

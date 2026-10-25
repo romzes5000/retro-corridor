@@ -221,6 +221,15 @@ test("меню: изменить — симулятор с fake, уровень 
     assert.deepEqual(bridgeArgs(named), ["--sim", "D2-D4", "--film", "--watch", "--lessons"])
 })
 
+test("меню: браузер не спрашивает уровень и не собирает флаги моста", async () => {
+    const c = await runMenu(scripted(["2", "4", "н", "н"]), DEFAULTS, true)
+    assert.equal(c.mode, "browser")
+    assert.equal(c.open, false)
+    assert.equal(c.public, false)
+    assert.deepEqual(bridgeArgs(c), [])
+    assert.match(describe({ ...c, open: true, public: true }), /браузер, с клавиатуры; страница откроется сама; публичная ссылка/)
+})
+
 test("меню: публичная ссылка спрашивается только со страницей", async () => {
     const on = await runMenu(scripted(["2", "", "", "", "н", "", ""]), DEFAULTS, true)
     assert.equal(on.public, false)

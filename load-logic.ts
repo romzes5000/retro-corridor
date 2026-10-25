@@ -188,6 +188,12 @@ function transpileAll(): string {
 
 let compiled = ""
 
+// The same transpiled game the VM runs, as a classic script (globals corridor, corridorArt, corridorRender).
+export function gameSource(): string {
+    if (!compiled) compiled = transpileAll()
+    return compiled
+}
+
 // Each call gets a fresh VM context, so module-level state in render.ts never leaks between tests.
 export function loadGame(): Game {
     const math = Object.create(Math)
