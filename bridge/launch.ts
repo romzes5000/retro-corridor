@@ -20,6 +20,8 @@ export interface Choices {
     watch: boolean
     // Open the live page in the browser once the bridge serves it.
     open: boolean
+    // A trycloudflare.com address for the live page, for as long as this run.
+    public: boolean
     film: boolean
     lessons: LessonsChoice
     mapMemory: boolean
@@ -33,6 +35,7 @@ export const DEFAULTS: Choices = {
     fast: false,
     watch: true,
     open: true,
+    public: true,
     film: true,
     lessons: "on",
     mapMemory: true,
@@ -77,6 +80,7 @@ export function describe(c: Choices): string {
     const parts = [MODES.find(([m]) => m === c.mode)![1]]
     if (c.mode !== "console") parts.push(`${c.level}, ${c.difficulty}${c.attempts > 1 ? `, до ${c.attempts} попыток` : ""}${c.mode === "sim-fake" && c.fast ? ", --fast" : ""}`)
     parts.push(c.watch ? (c.open ? "страница + браузер" : "страница") : "без страницы")
+    if (c.watch && c.public) parts.push("публичная ссылка")
     parts.push(c.film ? "фильм" : "без фильма")
     parts.push(c.lessons === "off" ? "без уроков" : c.lessons === "reset" ? "уроки с нуля" : "уроки")
     parts.push(c.mapMemory ? "память карты" : "без памяти карты")
@@ -102,6 +106,7 @@ export function loadLast(file: string): Choices | null {
         fast: pick(r.fast, (v) => typeof v === "boolean", DEFAULTS.fast),
         watch: pick(r.watch, (v) => typeof v === "boolean", DEFAULTS.watch),
         open: pick(r.open, (v) => typeof v === "boolean", DEFAULTS.open),
+        public: pick(r.public, (v) => typeof v === "boolean", DEFAULTS.public),
         film: pick(r.film, (v) => typeof v === "boolean", DEFAULTS.film),
         lessons: pick(r.lessons, (v) => LESSONS.some(([l]) => l === v), DEFAULTS.lessons),
         mapMemory: pick(r.mapMemory, (v) => typeof v === "boolean", DEFAULTS.mapMemory),
@@ -119,6 +124,8 @@ export interface PlayArgs {
     last: boolean
     dryRun: boolean
     open: boolean
+    // A trycloudflare.com address for this run. --no-public turns it off once.
+    public: boolean
     check: boolean
     help: boolean
     // Everything else goes to bridge/main.ts after the flags of the choices.
@@ -126,12 +133,13 @@ export interface PlayArgs {
 }
 
 export function parsePlayArgs(argv: string[]): PlayArgs {
-    const out: PlayArgs = { yes: false, last: false, dryRun: false, open: true, check: true, help: false, passthrough: [] }
+    const out: PlayArgs = { yes: false, last: false, dryRun: false, open: true, public: true, check: true, help: false, passthrough: [] }
     for (const a of argv) {
         if (a === "--yes" || a === "-y") out.yes = true
         else if (a === "--last") out.last = true
         else if (a === "--dry-run") out.dryRun = true
         else if (a === "--no-open") out.open = false
+        else if (a === "--no-public") out.public = false
         else if (a === "--no-check") out.check = false
         else if (a === "--help" || a === "-h") out.help = true
         else out.passthrough.push(a)
@@ -296,6 +304,39 @@ export function watchUrl(line: string): string | null {
     return m ? m[1] : null
 }
 
+// The quick-tunnel address cloudflared prints on stderr, once it has one.
+export function trycloudflareUrl(text: string): string | null {
+    const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
+    return m ? m[0] : null
+}
+
+// The banner names the address before it exists in DNS. An early lookup is cached as NXDOMAIN,
+// so the link is ready only once cloudflared has registered the tunnel.
+export function publicLink(text: string): string | null {
+    const url = trycloudflareUrl(text)
+    if (!url || !/Registered tunnel connection/.test(text)) return null
+    return url
+}
+
+// cloudflared dials the page on this machine, whatever host the bridge printed.
+export function tunnelTarget(watch: string): string | null {
+    let url: URL
+    try {
+        url = new URL(watch)
+    } catch {
+        return null
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null
+    const port = url.port || (url.protocol === "https:" ? "443" : "80")
+    return `http://127.0.0.1:${port}`
+}
+
+export function tunnelArgs(target: string): string[] {
+    return ["tunnel", "--no-autoupdate", "--url", target]
+}
+
+export const CLOUDFLARED_HINT = "нет cloudflared: brew install cloudflared"
+
 export function shellLine(args: string[]): string {
     return args.map((a) => (/^[\w./:=@%+-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(" ")
 }
@@ -371,7 +412,10 @@ export async function runMenu(io: MenuIO, start: Choices, first: boolean): Promi
         c.difficulty = await pickOne(io, "Сложность", DIFFICULTIES.map((d): [Difficulty, string] => [d, d]), c.difficulty)
     }
     c.watch = await askYes(io, "Страница просмотра в браузере (localhost:8787)", c.watch)
-    if (c.watch) c.open = await askYes(io, "Открыть браузер сам", c.open)
+    if (c.watch) {
+        c.open = await askYes(io, "Открыть браузер сам", c.open)
+        c.public = await askYes(io, "Публичная ссылка в интернете (trycloudflare)", c.public)
+    }
     c.film = await askYes(io, "Записывать фильм (bridge/out/film-*.jsonl)", c.film)
     c.lessons = await pickOne(io, "Уроки после смерти", LESSONS, c.lessons)
     c.mapMemory = await askYes(io, "Помнить разведанную карту между попытками", c.mapMemory)

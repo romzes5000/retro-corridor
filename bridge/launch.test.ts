@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
+import type { AddressInfo } from "node:net"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -13,6 +14,7 @@ import {
     checkVerdict,
     consoleBridges,
     DEFAULTS,
+    describe,
     envFileValue,
     findKey,
     loadLast,
@@ -22,7 +24,12 @@ import {
     runMenu,
     saveLast,
     stopBridges,
+    publicLink,
+    trycloudflareUrl,
+    tunnelArgs,
+    tunnelTarget,
     watchUrl,
+    CLOUDFLARED_HINT,
     type Choices,
     type KeySources,
     type MenuIO,
@@ -71,7 +78,11 @@ test("аргументы лаунчера: свои флаги забирает,
     assert.equal(a.check, false)
     assert.equal(a.dryRun, true)
     assert.deepEqual(a.passthrough, ["--sim", "ARENA", "--runs", "3"])
+    assert.equal(a.public, true)
     assert.equal(parsePlayArgs(["-y"]).yes, true)
+    const off = parsePlayArgs(["--no-public", "--sim", "ARENA"])
+    assert.equal(off.public, false)
+    assert.deepEqual(off.passthrough, ["--sim", "ARENA"])
 })
 
 test("план по итоговым флагам: сырой --sim делает запуск симулятором, --fake и --check без ключа", () => {
@@ -171,6 +182,27 @@ test("адрес страницы из строки моста", () => {
     assert.equal(watchUrl("film bridge/out/film-1.jsonl"), null)
 })
 
+test("адрес trycloudflare из лога cloudflared: есть, нет, чужой хост", () => {
+    assert.equal(trycloudflareUrl("INF |  https://foo-bar.trycloudflare.com  |"), "https://foo-bar.trycloudflare.com")
+    assert.equal(trycloudflareUrl("noise\nhttps://a.trycloudflare.com\nmore"), "https://a.trycloudflare.com")
+    assert.equal(trycloudflareUrl("no url here"), null)
+    assert.equal(trycloudflareUrl("https://evil.example.com"), null)
+    assert.equal(trycloudflareUrl("https://Foo.trycloudflare.com"), null)
+    assert.equal(publicLink("https://a.trycloudflare.com"), null, "до регистрации имени в DNS ещё нет")
+    assert.equal(publicLink("Registered tunnel connection"), null)
+    assert.equal(publicLink("https://a.trycloudflare.com\nRegistered tunnel connection"), "https://a.trycloudflare.com")
+    assert.equal(tunnelTarget("http://localhost:8787"), "http://127.0.0.1:8787")
+    assert.equal(tunnelTarget("http://0.0.0.0:9"), "http://127.0.0.1:9")
+    assert.equal(tunnelTarget("not a url"), null)
+    assert.deepEqual(tunnelArgs("http://127.0.0.1:8787"), ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8787"])
+})
+
+test("описание запуска называет публичную ссылку только вместе со страницей", () => {
+    assert.match(describe(DEFAULTS), /публичная ссылка/)
+    assert.doesNotMatch(describe({ ...DEFAULTS, public: false }), /публичная ссылка/)
+    assert.doesNotMatch(describe({ ...DEFAULTS, watch: false, public: true }), /публичная ссылка/)
+})
+
 test("меню: Enter повторяет прошлый запуск, конец ввода — тоже", async () => {
     const last: Choices = { ...DEFAULTS, mode: "sim", level: "ARENA" }
     assert.deepEqual(await runMenu(scripted([""]), last, false), last)
@@ -187,6 +219,15 @@ test("меню: изменить — симулятор с fake, уровень 
     const named = await runMenu(scripted(["2", "2", "d2-d4", "", "", "", "", "", "", ""]), DEFAULTS, true)
     assert.equal(named.level, "D2-D4")
     assert.deepEqual(bridgeArgs(named), ["--sim", "D2-D4", "--film", "--watch", "--lessons"])
+})
+
+test("меню: публичная ссылка спрашивается только со страницей", async () => {
+    const on = await runMenu(scripted(["2", "", "", "", "н", "", ""]), DEFAULTS, true)
+    assert.equal(on.public, false)
+    assert.equal(on.watch, true)
+    const off = await runMenu(scripted(["2", "", "н", "", "", ""]), { ...DEFAULTS, public: false }, true)
+    assert.equal(off.watch, false)
+    assert.equal(off.public, false, "без страницы вопрос не задаётся и прошлый ответ остаётся")
 })
 
 function play(args: string[], env: Record<string, string>, input = ""): { status: number | null; out: string } {
@@ -227,6 +268,17 @@ test("лаунчер с меню из stdin: симулятор с fake Jev иг
     assert.doesNotMatch(again.out, /Corridor: запуск ИИ/)
 })
 
+function freePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const server = http.createServer()
+        server.once("error", reject)
+        server.listen(0, "127.0.0.1", () => {
+            const port = (server.address() as AddressInfo).port
+            server.close(() => resolve(port))
+        })
+    })
+}
+
 function get(url: string): Promise<number> {
     return new Promise((done) => {
         http.get(url, (res) => {
@@ -238,9 +290,9 @@ function get(url: string): Promise<number> {
 
 test("лаунчер со страницей: печатает адреса страницы и карты, Ctrl+C останавливает мост", async () => {
     const state = tmp("last.json")
-    const port = 20000 + Math.floor(Math.random() * 20000)
+    const port = await freePort()
     saveLast(state, { ...DEFAULTS, mode: "sim-fake", watch: true, open: true, film: false, lessons: "off" })
-    const child = spawn(process.execPath, ["--experimental-strip-types", PLAY, "--last", "--no-open", "--watch-port", String(port), "--quiet"], {
+    const child = spawn(process.execPath, ["--experimental-strip-types", PLAY, "--last", "--no-open", "--no-public", "--watch-port", String(port), "--quiet"], {
         cwd: REPO,
         env: { ...process.env, RC_PLAY_STATE: state, OPENROUTER_KEY: "" },
         stdio: ["ignore", "pipe", "pipe"],
@@ -264,4 +316,77 @@ test("лаунчер со страницей: печатает адреса ст
     child.kill("SIGINT")
     assert.equal(await exited, 130)
     assert.equal(await get(`http://localhost:${port}/`), 0)
+})
+
+function alive(pid: number): boolean {
+    try {
+        process.kill(pid, 0)
+        return true
+    } catch {
+        return false
+    }
+}
+
+async function playUntil(args: string[], env: Record<string, string>, ready: (out: string) => boolean): Promise<{ child: ReturnType<typeof spawn>; out: string }> {
+    const child = spawn(process.execPath, ["--experimental-strip-types", PLAY, ...args], {
+        cwd: REPO,
+        env: { ...process.env, ...env },
+        stdio: ["ignore", "pipe", "pipe"],
+    })
+    let out = ""
+    child.stderr.on("data", (c: Buffer) => (out += c))
+    await new Promise<void>((done, fail) => {
+        const timer = setTimeout(() => fail(new Error(`не дождался: ${out}`)), 30000)
+        child.stdout.on("data", (c: Buffer) => {
+            out += c
+            if (ready(out)) {
+                clearTimeout(timer)
+                done()
+            }
+        })
+    })
+    return { child, out }
+}
+
+test("лаунчер со страницей: публичная ссылка из cloudflared, туннель умирает вместе с мостом", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rc-play-"))
+    const pidFile = path.join(dir, "tunnel.pid")
+    const script = path.join(dir, "cloudflared")
+    fs.writeFileSync(script, "#!/bin/sh\necho $$ > \"$RC_TUNNEL_PID\"\necho 'INF |  https://rc-test.trycloudflare.com  |' >&2\necho 'Registered tunnel connection' >&2\ntrap 'exit 0' INT TERM\nwhile true; do sleep 0.2; done\n")
+    fs.chmodSync(script, 0o755)
+    const state = path.join(dir, "last.json")
+    const port = await freePort()
+    saveLast(state, { ...DEFAULTS, mode: "sim-fake", watch: true, open: false, film: false, lessons: "off", public: true })
+    const { child, out } = await playUntil(
+        ["--last", "--no-open", "--watch-port", String(port), "--quiet"],
+        { RC_PLAY_STATE: state, OPENROUTER_KEY: "", RC_CLOUDFLARED: script, RC_TUNNEL_PID: pidFile },
+        (text) => text.includes("в интернет:"),
+    )
+    assert.match(out, /в интернет: https:\/\/rc-test\.trycloudflare\.com\n/)
+    assert.match(out, /карта: +https:\/\/rc-test\.trycloudflare\.com\/map\n/)
+    assert.match(out, new RegExp(`смотреть: http://localhost:${port}\\n`))
+    const pid = Number(fs.readFileSync(pidFile, "utf8"))
+    assert.equal(alive(pid), true)
+    const exited = new Promise<number | null>((done) => child.on("exit", (code) => done(code)))
+    child.kill("SIGINT")
+    assert.equal(await exited, 130)
+    for (let i = 0; i < 20 && alive(pid); i++) await new Promise((done) => setTimeout(done, 50))
+    assert.equal(alive(pid), false)
+})
+
+test("лаунчер со страницей: нет cloudflared — подсказка, локальная страница работает", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rc-play-"))
+    const state = path.join(dir, "last.json")
+    const port = await freePort()
+    saveLast(state, { ...DEFAULTS, mode: "sim-fake", watch: true, open: false, film: false, lessons: "off", public: true })
+    const { child, out } = await playUntil(
+        ["--last", "--no-open", "--watch-port", String(port), "--quiet"],
+        { RC_PLAY_STATE: state, OPENROUTER_KEY: "", RC_CLOUDFLARED: path.join(dir, "missing") },
+        (text) => text.includes(CLOUDFLARED_HINT) && text.includes("смотреть:"),
+    )
+    assert.match(out, new RegExp(CLOUDFLARED_HINT))
+    assert.equal(await get(`http://localhost:${port}/map`), 200)
+    const exited = new Promise<number | null>((done) => child.on("exit", (code) => done(code)))
+    child.kill("SIGINT")
+    assert.equal(await exited, 130)
 })
