@@ -63,6 +63,29 @@ performance on real hardware.
 
 ## AI player over USB (Jev)
 
+### Запуск
+
+```bash
+npm run play               # меню; Enter запускает как в прошлый раз
+npm run play -- --last     # прошлый запуск без вопросов
+npm run play -- --yes      # по умолчанию: приставка, --film --watch --lessons
+npm run play -- --dry-run  # только показать команду и откуда взят ключ
+npm run play -- --yes --sim ARENA --runs 3   # остальные флаги уходят в npm run ai
+```
+
+Меню спрашивает режим (приставка по USB, симулятор с Jev, симулятор с fake Jev без ключа), для
+симулятора уровень, попытки и сложность, затем страницу просмотра и открывать ли браузер, запись
+фильма, уроки (вкл, с нуля, выкл) и память карты. Ответы хранятся в `.play-last.json` (не в git).
+Перед игрой на приставке лаунчер останавливает уже запущенный на ней мост (SIGINT), проверяет
+приставку через `--check` и подсказывает, если она не подключена или не выбран `PLAYER AI`. Страница:
+`http://localhost:8787`, карта: `http://localhost:8787/map`, браузер открывается сам (`--no-open` —
+не открывать). Ctrl+C останавливает мост.
+
+Ключ OpenRouter берётся по порядку: `OPENROUTER_KEY` в окружении, файл из `RC_ENV_FILE`, `.env.local`
+в репо (не в git), macOS Keychain, сервис `retro-corridor-openrouter` (другой — `RC_KEYCHAIN_SERVICE`).
+Положить в Keychain: `security add-generic-password -U -s retro-corridor-openrouter -a "$USER" -w`.
+Без ключа меню предложит fake Jev.
+
 With `PLAYER AI` selected, the console plays by itself while a bridge on the computer decides what to
 do next. The game never waits for it: it keeps running at full speed and executes the last command.
 

@@ -7,3 +7,5 @@ demo/baseline/
 demo/after/
 demo/out/sheet-*.png
 bridge/out/
+.play-last.json
+.env.local
